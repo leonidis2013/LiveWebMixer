@@ -5,14 +5,47 @@ import { dB2g, NG, NA, NF, ND } from './model.js';
 const AUX = Array.from({ length: NA }, (_, i) => 'a' + (i + 1)), FX = Array.from({ length: NF }, (_, i) => 'f' + (i + 1));
 const BUTTER = { 12: [-3.01], 24: [-5.33, 2.32] };   // Web Audio wants filter Q in dB for high/low-pass
 
+// Connection to the server's plugin host: opens plugin instances and passes parameter changes.
+class VstLink {
+  constructor() { this.w = null; this.h = 0; this.inst = new Map(); this.onchange = null; }
+  boot() {
+    if (this.w) return;
+    this.w = new Worker('js/vstworker.js');
+    this.w.onmessage = e => {
+      const d = e.data;
+      if (d.t === 'state') { for (const [h, i] of this.inst) { i.state = 'connecting'; if (d.up) this.sendOpen(h, i); } }
+      else if (d.m.t === 'lost') { for (const [h, i] of this.inst) { i.state = 'connecting'; this.sendOpen(h, i); } }
+      else { const i = this.inst.get(d.m.h); if (!i) return;
+        if (d.m.t === 'opened') { i.state = 'running'; i.params = d.m.params; i.error = ''; }
+        else if (d.m.t === 'error') { i.state = 'error'; i.error = d.m.error; }
+        else if (d.m.t === 'val') { const p = (i.params || []).find(p => p.name === d.m.param.name); if (p) Object.assign(p, d.m.param); i.onval && i.onval(d.m.param); return; } }
+      this.onchange && this.onchange();
+    };
+  }
+  sendOpen(h, i) { this.w.postMessage({ t: 'send', m: { t: 'open', h, plugin: i.b.p.plugin, values: i.b.p.values, ch: i.ch } }); }
+  open(b, ch, node) {
+    this.boot();
+    const h = ++this.h, mc = new MessageChannel(), i = { b, ch, state: 'connecting', params: null, error: '', late: 0 };
+    this.inst.set(h, i);
+    node.port.postMessage({ port: mc.port1 }, [mc.port1]);
+    node.port.onmessage = e => { i.late = e.data; };
+    this.w.postMessage({ t: 'port', h, port: mc.port2 }, [mc.port2]);
+    this.sendOpen(h, i);
+    return h;
+  }
+  set(h, name, raw) { this.w.postMessage({ t: 'send', m: { t: 'set', h, name, raw } }); }
+  close(h) { if (!this.inst.delete(h)) return; this.w.postMessage({ t: 'send', m: { t: 'close', h } }); this.w.postMessage({ t: 'drop', h }); }
+}
+
 export class Engine {
-  constructor() { this.ctx = null; this.n = new Map(); this.pos = 0; this.len = 0; this.playing = false; this.onstate = null; this.buf = new Float32Array(1024); }
+  constructor() { this.link = new VstLink(); this.vstDelayMs = 250; this.ctx = null; this.n = new Map(); this.pos = 0; this.len = 0; this.playing = false; this.onstate = null; this.buf = new Float32Array(1024); }
 
   static supported() { return !!(window.AudioContext && window.AudioWorkletNode && window.isSecureContext); }
 
   async start(chCounts) {
     if (this.ctx) await this.ctx.close().catch(() => {});
-    this.n.clear(); this.pos = 0; this.len = 0; this.playing = false; this.loop = null;
+    for (const sn of this.n.values()) this.dispose(sn);
+    this.n.clear(); this.pos = 0; this.len = 0; this.playing = false; this.loop = null; this.out = null;
     const ctx = this.ctx = new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' });
     await ctx.audioWorklet.addModule('js/worklets.js');
     this.tp = new AudioWorkletNode(ctx, 'transport', { numberOfInputs: 0, numberOfOutputs: chCounts.length, outputChannelCount: chCounts });
@@ -63,7 +96,8 @@ export class Engine {
     this.pflBus = c.createGain(); this.pflBus.gain.value = 0; this.pflBus.connect(this.out);
     this.mon = {};
     for (const k of ['main', ...AUX, 'ref']) { const g = this.mon[k] = c.createGain(); g.gain.value = 0; g.connect(this.selBus); }
-    if (refOut >= 0) this.tp.connect(this.mon.ref, refOut);
+    this.refDelay = c.createDelay(4); this.refDelay.connect(this.mon.ref);
+    if (refOut >= 0) this.tp.connect(this.refDelay, refOut);
 
     const mk = id => { const sn = this.node(mixer.strips[id]); this.n.set(id, sn); return sn; };
     const main = mk('main'); main.post.connect(this.mon.main);
@@ -72,15 +106,15 @@ export class Engine {
     for (const f of FX) { const sn = mk(f); sn.lrG = this.g(sn.post, main.in); sn.fxIn = c.createGain(); this.fxSet(f); }
     for (const { id, out } of inputs) {
       const sn = mk(id);
-      this.tp.connect(sn.in, out);
+      sn.comp = c.createDelay(4); this.tp.connect(sn.comp, out); sn.comp.connect(sn.in);   // lines channels up with ones that use a server plugin
       sn.lrG = this.g(sn.post, main.in);
       sn.grpG = Array.from({ length: NG }, (_, i) => this.g(sn.post, this.n.get('g' + (i + 1)).in));
       sn.sends = {};
       for (const a of AUX) sn.sends[a] = { pre: this.g(sn.pre, this.n.get(a).in), post: this.g(sn.post, this.n.get(a).in) };
       for (const f of FX) sn.sends[f] = { pre: this.g(sn.pre, this.n.get(f).fxIn), post: this.g(sn.post, this.n.get(f).fxIn) };
     }
-    for (const id of this.n.keys()) { this.rechain(id); this.update(id, true); }
-    this.monitor();
+    for (const id of this.n.keys()) { this.rechain(id, true); this.update(id, true); }
+    this.pdc(); this.monitor();
   }
   g(from, to) { const g = this.ctx.createGain(); g.gain.value = 0; from.connect(g); g.connect(to); return g; }
 
@@ -95,13 +129,13 @@ export class Engine {
     return sn;
   }
   dispose(sn) {
-    for (const k of ['in', 'chainOut', 'pre', 'fad', 'post', 'pan', 'an', 'pflG', 'lrG', 'fxIn']) sn[k] && sn[k].disconnect();
+    for (const k of ['comp', 'in', 'chainOut', 'pre', 'fad', 'post', 'pan', 'an', 'pflG', 'lrG', 'fxIn']) sn[k] && sn[k].disconnect();
     for (const b of sn.blocks.values()) b.dispose();
     sn.fxNodes && sn.fxNodes.forEach(n => n.disconnect());
   }
 
   // Rewire a strip's processing chain in the order the model lists it (bypassed blocks are skipped).
-  rechain(id) {
+  rechain(id, noPdc) {
     const sn = this.n.get(id); if (!sn) return;
     sn.in.disconnect();
     for (const [bid, b] of sn.blocks) { b.out.disconnect(); if (!sn.s.chain.some(x => x.id === bid)) { b.dispose(); sn.blocks.delete(bid); } }
@@ -113,10 +147,24 @@ export class Engine {
       if (b.on) { prev.connect(node.in); prev = node.out; }
     }
     prev.connect(sn.chainOut);
+    if (!noPdc) this.pdc();
   }
+  // Delay compensation: a server plugin returns its audio a fixed time later, so every other channel
+  // is held back by the same amount at its input. Faders, EQ and the rest still respond instantly.
+  pdc() {
+    const D = this.vstDelayMs / 1000, lat = sn => sn.s.chain.filter(b => b.type === 'vst' && b.on).length * D;
+    let max = 0;
+    for (const sn of this.n.values()) if (sn.comp) max = Math.max(max, lat(sn));
+    for (const sn of this.n.values()) if (sn.comp) sn.comp.delayTime.value = max - lat(sn);
+    const main = this.n.get('main');
+    if (this.refDelay) this.refDelay.delayTime.value = Math.min(3.9, max + (main ? lat(main) : 0));
+  }
+  vst(id, bid) { const sn = this.n.get(id), b = sn && sn.blocks.get(bid); return b && b.h ? this.link.inst.get(b.h) : null; }
+  vstSet(id, bid, name, raw) { const sn = this.n.get(id), b = sn && sn.blocks.get(bid); if (b && b.h) this.link.set(b.h, name, raw); }
   blockSet(id, bid) { const sn = this.n.get(id), b = sn && sn.blocks.get(bid); b && b.set(); }
   gr(id, bid) { const sn = this.n.get(id), b = sn && sn.blocks.get(bid); return b && b.b.on ? b.gr || 0 : 0; }
 
+  stereoOf(b) { for (const s of Object.values(this.m.strips)) if (s.chain.includes(b)) return s.kind !== 'in' || s.stereo; return true; }
   block(b) {
     const c = this.ctx, blk = { b, gr: 0 };
     if (b.type === 'hpf' || b.type === 'lpf') {
@@ -136,6 +184,12 @@ export class Engine {
       blk.set = () => blk.b.p.b.forEach((band, k) => { f[k].type = band.t; f[k].frequency.value = band.f; f[k].gain.value = band.g; f[k].Q.value = band.q; });
       blk.active = () => f;
       blk.dispose = () => f.forEach(x => x.disconnect());
+    } else if (b.type === 'vst') {
+      const ch = this.stereoOf(b) ? 2 : 1, h = this.link.h + 1;
+      const n = new AudioWorkletNode(c, 'remote', { channelCount: ch, channelCountMode: 'explicit', outputChannelCount: [ch], processorOptions: { delay: Math.round(this.vstDelayMs * 48), ch, h } });
+      blk.h = this.link.open(b, ch, n);
+      blk.in = blk.out = n; blk.set = () => {};
+      blk.dispose = () => { n.disconnect(); this.link.close(blk.h); };
     } else {
       const n = new AudioWorkletNode(c, b.type);
       n.port.onmessage = e => { blk.gr = e.data; };

@@ -1,6 +1,6 @@
 {
   "name": "livewebmixer",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Web-based multitrack mixing console for audio training: load stems, get a channel per track, and mix in the browser with a low-latency audio engine",
   "main": "server.js",
   "scripts": {

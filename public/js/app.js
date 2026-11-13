@@ -28,7 +28,13 @@ const QN = { flac: 'Lossless', hi: 'High', lo: 'Low' };
 
 const E = new Engine();
 const S = { songs: [], song: null, templates: clone(DEFAULT_TEMPLATES), mix: { scenes: [], current: null }, m: null, page: 'setup',
-  view: ls('view') || 'sq', layer: 0, sof: 'main', sel: null, quality: ls('quality') || 'hi', tpl: ls('tpl') || 'auto', popup: null, loop: { a: null, b: null, on: false }, msg: '', up: '' };
+  view: ls('view') || 'sq', layer: 0, sof: 'main', sel: null, quality: ls('quality') || 'hi', tpl: ls('tpl') || 'auto', popup: null, loop: { a: null, b: null, on: false }, msg: '', up: '',
+  plugins: { host: { ok: false }, plugins: [] }, settings: { vault: null }, vault: { list: null, q: '', err: '' } };
+E.vstDelayMs = +ls('vstDelay') || 250;
+const blkLabel = b => b.type === 'vst' ? (b.p.name || 'Plugin') : SPECS[b.type].label;
+const blkLong = b => b.type === 'vst' ? (b.p.name || 'Server plugin') : SPECS[b.type].long;
+const mediaUrl = t => S.song.vault ? `/media/vault/${encodeURIComponent(t.file)}/${S.quality}` : `/media/${S.song.id}/${t.id}/${S.quality}?r=${t.rev}`;
+const mixUrl = () => S.song.vault ? `/api/vault/sessions/${encodeURIComponent(S.song.vault.id)}/versions/${encodeURIComponent(S.song.vault.version)}/mix` : `/api/songs/${S.song.id}/mix`;
 let meters = [], faders = new Map(), tUI = {};
 
 // =====================================================================================
@@ -39,7 +45,7 @@ async function selectSong(id) { S.song = id ? await api('GET', '/api/songs/' + i
 let pollT = 0;
 function pollSong() {
   clearTimeout(pollT);
-  if (S.page !== 'setup' || !S.song || !S.song.tracks.some(t => t.status === 'queued' || t.status === 'processing')) return;
+  if (S.page !== 'setup' || !S.song || S.song.vault || !S.song.tracks.some(t => t.status === 'queued' || t.status === 'processing')) return;
   pollT = setTimeout(async () => { try { S.song = await api('GET', '/api/songs/' + S.song.id); renderSetup(); } catch {} pollSong(); }, 1500);
 }
 const act = async fn => { try { S.msg = ''; await fn(); } catch (e) { S.msg = e.message; } renderSetup(); pollSong(); };
@@ -73,13 +79,15 @@ function renderSetup() {
     !S.songs.length && h('div', { class: 'note', style: 'margin-bottom:8px' }, 'No songs yet. Name one to start.'),
     h('div', { class: 'row', style: 'margin-top:8px' }, nameIn, h('button', { class: 'on', onclick: add }, 'Add'))));
 
+  const left = h('div', { style: 'display:flex;flex-direction:column;gap:12px;min-width:0' }, root.firstChild, vaultCard());
   const right = h('div', { style: 'display:flex;flex-direction:column;gap:12px;min-width:0' });
-  root.append(right);
+  root.append(left, right);
   if (S.msg) right.append(h('div', { class: 'errbox' }, S.msg));
   if (!Engine.supported()) right.append(h('div', { class: 'errbox' }, 'This page is open over plain http, and browsers only allow the low-latency audio engine on https. Open LiveWebMixer at https://',
     location.hostname, ':8443 (accept the certificate warning once), or put it behind your reverse proxy.'));
   const song = S.song;
-  if (!song) { right.append(h('div', { class: 'card note' }, 'Pick a song on the left, or add one, then load its tracks here.')); return renderTemplates(right); }
+  if (!song) { right.append(h('div', { class: 'card note' }, 'Pick a song on the left, or add one, then load its tracks here.')); renderTemplates(right); return renderPlugins(right); }
+  if (song.vault) { right.append(vaultSongCard(song)); renderTemplates(right); return renderPlugins(right); }
 
   const ready = song.tracks.filter(t => t.status === 'ready'), chans = ready.filter(t => t.role === 'channel');
   const busy = song.tracks.some(t => t.status === 'queued' || t.status === 'processing');
@@ -116,7 +124,7 @@ function renderSetup() {
     ready.length ? h('div', { class: 'note', style: 'margin:0 0 10px' }, `Tracks download once at the chosen quality and stay cached in this browser. Loaded, this song uses about ${fmtMB(mem)} of memory.`,
       S.quality === 'flac' ? ' Lossless is best on your own network.' : ' High and Low are Opus, sized for remote connections.') : null,
     song.tracks.length ? h('div', { style: 'overflow-x:auto' }, h('table', { class: 'tr' }, h('thead', {}, h('tr', {}, ['Ch', '', 'Name', 'Format', '', 'Use as', 'Download', ''].map(x => h('th', {}, x)))), h('tbody', {}, rows))) : null));
-  renderTemplates(right);
+  renderTemplates(right); renderPlugins(right);
 }
 
 function renderTemplates(root) {
@@ -126,9 +134,70 @@ function renderTemplates(root) {
     S.templates.map((t, i) => {
       const m = h('input', { type: 'text', class: 'sm', value: t.match || '', placeholder: 'words in the track name, comma separated', onchange: () => { t.match = m.value; save(); } });
       return h('div', { class: 'tpl' }, h('b', {}, t.name), m,
-        h('div', { class: 'chips' }, t.chain.length ? t.chain.map(b => h('span', { class: 'chip' + (b.on === false ? ' off' : '') }, SPECS[b.type].label)) : h('span', { class: 'note' }, 'no processing')),
+        h('div', { class: 'chips' }, t.chain.length ? t.chain.map(b => h('span', { class: 'chip' + (b.on === false ? ' off' : '') }, blkLabel(b))) : h('span', { class: 'note' }, 'no processing')),
         h('button', { class: 'sm danger', disabled: S.templates.length < 2, onclick: () => { S.templates.splice(i, 1); save(); renderSetup(); } }, '✕'));
     })));
+}
+
+// ---- LiveVault (the multitrack library) ----
+async function loadVaultList() {
+  if (!S.settings.vault) return;
+  try { S.vault.list = (await api('GET', '/api/vault/sessions' + (S.vault.q ? '?q=' + encodeURIComponent(S.vault.q) : ''))).sessions || []; S.vault.err = ''; }
+  catch (e) { S.vault.list = null; S.vault.err = e.message; }
+}
+const openVault = (id, ver) => act(async () => { S.song = await api('GET', `/api/vault/sessions/${encodeURIComponent(id)}/versions/${encodeURIComponent(ver)}`); ls('song', ''); });
+function vaultCard() {
+  const v = S.settings.vault, card = h('div', { class: 'card songs' }, h('h2', {}, 'LiveVault library'));
+  if (!v || S.vault.edit) {
+    const url = h('input', { type: 'text', placeholder: 'https://livevault address', value: v ? v.url : '' }), tok = h('input', { type: 'password', placeholder: v && v.hasToken ? 'Access token (unchanged)' : 'Access token' });
+    const ins = h('input', { type: 'checkbox', checked: v ? v.insecure : false });
+    card.append(h('div', { class: 'note', style: 'margin-bottom:8px' }, 'Connect to your LiveVault to open its sessions here without copying them. Mixes and scenes are saved back to the session version.'),
+      h('div', { style: 'display:flex;flex-direction:column;gap:6px' }, url, tok, h('label', { class: 'row note' }, ins, 'Allow self-signed certificate'),
+        h('div', { class: 'row' }, h('button', { class: 'on', onclick: () => act(async () => { S.settings = await api('PUT', '/api/settings', { vault: { url: url.value, token: tok.value, insecure: ins.checked } }); S.vault.edit = false; await loadVaultList(); }) }, 'Connect'),
+          v && h('button', { onclick: () => { S.vault.edit = false; renderSetup(); } }, 'Cancel'),
+          v && h('button', { class: 'danger', onclick: () => act(async () => { S.settings = await api('PUT', '/api/settings', { vault: null }); S.vault = { list: null, q: '', err: '' }; if (S.song && S.song.vault) S.song = null; }) }, 'Disconnect'))));
+    return card;
+  }
+  const q = h('input', { type: 'text', class: 'grow', placeholder: 'Search sessions', value: S.vault.q, onchange: () => { S.vault.q = q.value; act(loadVaultList); } });
+  card.append(h('div', { class: 'row', style: 'margin-bottom:8px' }, q, h('button', { class: 'sm', title: 'LiveVault connection', onclick: () => { S.vault.edit = true; renderSetup(); } }, 'Connection')));
+  if (S.vault.err) card.append(h('div', { class: 'errbox' }, S.vault.err));
+  else if (!S.vault.list) card.append(h('div', { class: 'note' }, 'Loading…'));
+  else if (!S.vault.list.length) card.append(h('div', { class: 'note' }, S.vault.q ? 'No sessions match.' : 'The library has no sessions yet.'));
+  else card.append(...S.vault.list.map(x => h('button', { class: 'song' + (S.song && S.song.vault && S.song.vault.id === String(x.id) ? ' on' : ''), onclick: () => openVault(x.id, x.latest) }, x.name, h('small', {}, 'v' + x.latest))));
+  return card;
+}
+function vaultSongCard(song) {
+  const v = song.vault, chans = song.tracks.filter(t => t.role === 'channel');
+  const total = q => song.tracks.reduce((n, t) => n + (t.sizes[q] || 0), 0), mem = song.tracks.reduce((n, t) => n + t.duration * 48000 * 2 * t.channels, 0);
+  const ver = h('select', { onchange: () => openVault(v.id, ver.value) }, v.versions.map(x => h('option', { value: x, selected: x === v.version }, 'Version ' + x)));
+  const tplSel = h('select', { onchange: () => { S.tpl = tplSel.value; ls('tpl', S.tpl); } }, h('option', { value: 'auto', selected: S.tpl === 'auto' }, 'Auto, by track name'), S.templates.map(t => h('option', { value: t.name, selected: S.tpl === t.name }, t.name)));
+  const qSeg = h('div', { class: 'seg' }, Object.keys(QN).map(q => h('button', { class: S.quality === q ? 'on' : '', onclick: () => { S.quality = q; ls('quality', q); renderSetup(); } }, `${QN[q]} · ${fmtMB(total(q))}`)));
+  let n = 0;
+  return h('div', { class: 'card' }, h('h2', {}, 'LiveVault session'),
+    h('div', { class: 'row', style: 'margin-bottom:8px' }, h('b', { class: 'grow', style: 'font-size:16px' }, song.name), ver),
+    (v.tags.length || v.notes) ? h('div', { class: 'note', style: 'margin-bottom:10px' }, h('div', { class: 'chips', style: 'margin-bottom:4px' }, v.tags.map(t => h('span', { class: 'chip' }, t))), v.notes) : null,
+    h('div', { class: 'row', style: 'margin-bottom:8px' }, h('span', { class: 'note' }, 'Channel template'), tplSel, h('span', { class: 'note' }, 'Audio quality'), qSeg, h('span', { class: 'grow' }),
+      h('button', { class: 'on', disabled: !chans.length || !Engine.supported(), onclick: openMixer }, `Open mixer (${chans.length} channels)`)),
+    h('div', { class: 'note', style: 'margin:0 0 10px' }, `Tracks play straight from LiveVault and stay cached in this browser. Mixes and scenes are saved to version ${v.version} in LiveVault. Loaded, this session uses about ${fmtMB(mem)} of memory. To change the tracks, make a new version in LiveVault.`),
+    h('div', { style: 'overflow-x:auto' }, h('table', { class: 'tr' }, h('thead', {}, h('tr', {}, ['Ch', 'Name', 'Format', 'Use as', 'Download'].map(x => h('th', {}, x)))),
+      h('tbody', {}, song.tracks.map(t => h('tr', {}, h('td', { class: 'num' }, t.role === 'channel' ? String(++n) : 'REF'), h('td', { style: 'width:50%' }, t.name), h('td', { class: 'num' }, `${t.channels > 1 ? 'Stereo' : 'Mono'} · ${fmtTime(t.duration)}`),
+        h('td', { class: 'num' }, t.role === 'channel' ? 'Mixer channel' : 'Reference mix'), h('td', { class: 'num' }, fmtMB(t.sizes[S.quality] || 0))))))));
+}
+
+// ---- server plugins ----
+function renderPlugins(root) {
+  const P = S.plugins, host = P.host || {};
+  const file = h('input', { type: 'file', accept: '.zip', class: 'hide', onchange: () => { if (!file.files.length) return; const f = file.files[0]; S.up = 'Uploading and checking ' + f.name + '…'; renderSetup();
+    act(async () => { try { const r = await fetch('/api/plugins/upload?name=' + encodeURIComponent(f.name), { method: 'PUT', body: f }); const j = await r.json(); if (!r.ok) throw new Error(j.error); S.plugins = j; } finally { S.up = ''; } }); } });
+  const dSeg = h('div', { class: 'seg' }, [150, 250, 400, 600].map(ms => h('button', { class: E.vstDelayMs === ms ? 'on' : '', onclick: () => { E.vstDelayMs = ms; ls('vstDelay', ms); renderSetup(); } }, ms + ' ms')));
+  root.append(h('div', { class: 'card' }, h('h2', {}, 'Server plugins (VST3)'),
+    h('div', { class: 'note', style: 'margin-bottom:8px' }, `Browsers cannot run VST plugins, so these run on the server: a channel that uses one sends its audio there and back. Only Linux VST3 builds for this server's processor (${host.arch || '?'}) will load; Mac and Windows plugin files will not. Plugins are adjusted with sliders in the mixer, without their own window.`),
+    !host.ok ? h('div', { class: 'errbox' }, 'The plugin host is not running' + (host.error ? ': ' + host.error : '.')) : null,
+    P.plugins.map(p => h('div', { class: 'tpl', style: 'grid-template-columns:1fr auto auto' }, h('div', {}, h('b', {}, p.id.replace(/\.vst3$/i, '')), h('div', { class: 'note', style: p.error ? 'color:var(--bad)' : '' }, p.error ? 'Did not load: ' + p.error : p.plugins.length > 4 ? `${p.plugins.length} plugins: ${p.plugins.slice(0, 4).map(x => x.name).join(', ')}…` : p.plugins.map(x => (x.name || 'plugin') + (x.params != null ? ` · ${x.params} parameters` : '')).join(', '))),
+      p.error ? h('button', { class: 'sm', onclick: () => act(async () => { S.plugins = await api('POST', `/api/plugins/${encodeURIComponent(p.id)}/probe`); }) }, 'Retry') : h('span'),
+      h('button', { class: 'sm danger', onclick: () => act(async () => { S.plugins = await api('DELETE', '/api/plugins/' + encodeURIComponent(p.id)); }) }, '✕'))),
+    file, h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { disabled: !host.ok || !!S.up, onclick: () => file.click() }, 'Upload plugin (.zip of its .vst3 folder)'), h('span', { class: 'note grow' }, S.up && S.up.startsWith('Uploading and') ? S.up : ''),
+      h('span', { class: 'note', title: 'How long plugin audio may take to go to the server and back. Raise it if a plugin channel reports late audio (slow or remote connections).' }, 'Round trip'), dSeg)));
 }
 
 // =====================================================================================
@@ -152,12 +221,12 @@ async function openMixer() {
     const worker = async () => {
       while (next < list.length) {
         const i = next++, t = list[i];
-        await E.loadTrack(i, `/media/${S.song.id}/${t.id}/${S.quality}?r=${t.rev}`, (n, cached) => { if (cached) fromCache++; else bytes += n; });
+        await E.loadTrack(i, mediaUrl(t), (n, cached) => { if (cached) fromCache++; else bytes += n; });
         done++; setLoad(done / list.length, `${done} of ${list.length} tracks · ${fmtMB(bytes)} downloaded` + (fromCache ? ` · ${fromCache} from cache` : ''));
       }
     };
     await Promise.all([worker(), worker(), worker()]);
-    S.mix = await api('GET', `/api/songs/${S.song.id}/mix`);
+    S.mix = await api('GET', mixUrl()); if (!S.mix || !Array.isArray(S.mix.scenes)) S.mix = { scenes: [], current: null };
     S.m = freshMixer(S.mix.current);
     buildEngine();
     E.onstate = () => {};
@@ -177,7 +246,7 @@ function showPage(p) {
 }
 let saveT = 0;
 function dirty() { clearTimeout(saveT); saveT = setTimeout(saveMix, 1500); }
-function saveMix() { clearTimeout(saveT); if (!S.m || !S.song) return; S.mix.current = clone(S.m); api('PUT', `/api/songs/${S.song.id}/mix`, S.mix).catch(() => {}); }
+function saveMix() { clearTimeout(saveT); if (!S.m || !S.song) return; S.mix.current = clone(S.m); api('PUT', mixUrl(), S.mix).catch(() => {}); }
 
 // =====================================================================================
 // Transport bar
@@ -261,7 +330,7 @@ function stripEl(id, bank) {
   const el = h('div', { class: `strip k-${isD ? 'dca' : s.kind}` + (S.sel === id ? ' sel' : '') + (b.sof ? ' sof' : '') + (bank ? ' bank' : '') });
   el.append(h('div', { class: 'no' }, stripNo(id) + (b.sof ? ' → ' + stripNo(S.sof) : '')));
   if (daw && !isD) {
-    el.append(h('div', { class: 'ins' }, s.chain.map(blk => h('button', { class: blk.on ? 'on' : 'byp', title: SPECS[blk.type].long, onclick: () => openPopup(id, blk.id) }, SPECS[blk.type].label)), addBlockSel(s, '+')));
+    el.append(h('div', { class: 'ins' }, s.chain.map(blk => h('button', { class: blk.on ? 'on' : 'byp', title: blkLong(blk), onclick: () => openPopup(id, blk.id) }, blkLabel(blk))), addBlockSel(s, '+')));
     if (s.kind === 'in') {
       el.append(h('div', { class: 'snd' }, [...AUX, ...FXS].map(k => { const sd = s.sends[k]; const r = h('input', { type: 'range', min: 0, max: 1, step: 0.005, value: dbToPos(sd.lvl), title: `Send to ${S.m.strips[k].name}`, oninput: () => { sd.lvl = posToDb(+r.value); E.update(id); dirty(); } }); return h('div', {}, stripNo(k), r); })));
       const pn = h('input', { type: 'range', class: 'pn', min: -1, max: 1, step: 0.02, value: s.pan, title: 'Pan (double-click to center)', oninput: () => { s.pan = +pn.value; E.update(id); dirty(); }, ondblclick: () => { pn.value = s.pan = 0; E.update(id); dirty(); } });
@@ -319,8 +388,14 @@ function slider(spec, get, set, cls = '') {
 const toggles = (label, items) => h('div', { class: 'tg' }, h('span', { class: 'lb' }, label), items);
 const tbtn = (txt, on, fn, title) => { const b = h('button', { class: on ? 'on' : '', title, onclick: () => { fn(); } }, txt); return b; };
 function addBlockSel(s, label = '＋ Add processing…') {
-  const sel = h('select', { class: 'sm', onchange: () => { if (!sel.value) return; const b = newBlock(sel.value); s.chain.push(b); E.rechain(s.id); dirty(); if (S.view === 'daw') S.popup = { id: s.id, bid: b.id }; renderMixer(); } },
-    h('option', { value: '' }, label), Object.entries(SPECS).map(([k, v]) => h('option', { value: k }, v.long)));
+  const plugs = (s.kind === 'in' || s.kind === 'main') && S.plugins.host.ok ? S.plugins.plugins.filter(p => !p.error).flatMap(p => p.plugins.map(x => ({ v: 'vst:' + p.id + '::' + x.name, l: x.name || p.id.replace(/\.vst3$/i, '') }))) : [];
+  const sel = h('select', { class: 'sm', onchange: () => {
+    if (!sel.value) return;
+    let b;
+    if (sel.value.startsWith('vst:')) { b = newBlock('vst'); b.p.plugin = sel.value.slice(4); b.p.name = sel.selectedOptions[0].textContent; } else b = newBlock(sel.value);
+    s.chain.push(b); E.rechain(s.id); dirty(); if (S.view === 'daw') S.popup = { id: s.id, bid: b.id }; renderMixer(); } },
+    h('option', { value: '' }, label), Object.entries(SPECS).filter(([, v]) => !v.remote).map(([k, v]) => h('option', { value: k }, v.long)),
+    plugs.length ? h('optgroup', { label: 'Server plugins' }, plugs.map(p => h('option', { value: p.v }, p.l))) : null);
   return sel;
 }
 
@@ -406,6 +481,30 @@ function blockBody(s, b) {
     requestAnimationFrame(draw);
     return body;
   }
+  if (b.type === 'vst') {
+    const inst = E.vst(sid, b.id), st = h('div', { class: 'note' });
+    meters.push({ kind: 'vst', id: sid, bid: b.id, el: st });
+    body.append(st);
+    if (!inst || inst.state === 'connecting') return body;
+    if (inst.state === 'error') { body.append(h('div', { class: 'errbox' }, inst.error)); return body; }
+    const all = inst.params || [], list = h('div', { style: 'display:flex;flex-direction:column;gap:5px' }), rows = new Map();
+    const show = f => {
+      list.replaceChildren(); rows.clear();
+      const hit = all.filter(p => !f || p.label.toLowerCase().includes(f));
+      for (const p of hit.slice(0, 40)) {
+        const out = h('span', {}, p.text + (p.units ? ' ' + p.units : ''));
+        const r = h('input', { type: 'range', min: 0, max: 1, step: p.steps > 1 && p.steps < 200 ? 1 / (p.steps - 1) : 0.001, value: p.raw,
+          oninput: () => { p.raw = +r.value; b.p.values[p.name] = p.raw; E.vstSet(sid, b.id, p.name, p.raw); dirty(); } });
+        rows.set(p.name, out);
+        list.append(h('div', { class: 'pr', title: p.label }, h('span', { style: 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }, p.label), r, out));
+      }
+      if (hit.length > 40) list.append(h('div', { class: 'note' }, `${hit.length - 40} more: type in the box to find them`));
+    };
+    inst.onval = p => { const out = rows.get(p.name); if (out) out.textContent = p.text + (p.units ? ' ' + p.units : ''); };
+    if (all.length > 12) { const f = h('input', { type: 'text', class: 'sm', placeholder: `Find a parameter (${all.length})`, oninput: () => show(f.value.trim().toLowerCase()) }); body.append(f); }
+    show(''); body.append(list);
+    return body;
+  }
   let redraw = () => {};
   if (b.type === 'hpf' || b.type === 'lpf') {
     const cv = curveCanvas(70); body.append(cv);
@@ -436,9 +535,9 @@ function blockBody(s, b) {
 function blockCard(s, b) {
   const i = s.chain.indexOf(b);
   const mv = d => { const j = i + d; if (j < 0 || j >= s.chain.length) return; s.chain.splice(i, 1); s.chain.splice(j, 0, b); E.rechain(s.id); dirty(); renderMixer(); };
-  return h('div', { class: 'card blk' + (b.on ? '' : ' off') + (b.type === 'eq' ? ' wide' : '') },
+  return h('div', { class: 'card blk' + (b.on ? '' : ' off') + (b.type === 'eq' ? ' wide' : '') + (b.type === 'vst' ? ' plug' : '') },
     h('div', { class: 'hd' }, h('button', { class: b.on ? 'on' : '', title: 'In / bypass', onclick: () => { b.on = !b.on; E.rechain(s.id); dirty(); renderMixer(); } }, b.on ? 'In' : 'Out'),
-      h('span', { class: 't grow' }, SPECS[b.type].long),
+      h('span', { class: 't grow' }, blkLong(b)),
       h('button', { title: 'Earlier in the signal flow', disabled: i === 0, onclick: () => mv(-1) }, '◀'), h('button', { title: 'Later in the signal flow', disabled: i === s.chain.length - 1, onclick: () => mv(1) }, '▶'),
       h('button', { class: 'danger', title: 'Remove', onclick: () => { s.chain.splice(i, 1); if (S.popup && S.popup.bid === b.id) S.popup = null; E.rechain(s.id); dirty(); renderMixer(); } }, '✕')),
     blockBody(s, b));
@@ -534,6 +633,9 @@ function frame() {
         const l = E.level(m.id); m.v = Math.max(l, m.v - 1.2);
         m.el.style.height = (100 - Math.max(0, Math.min(1, (m.v + 60) / 66)) * 100) + '%';
         if (l >= -0.1) m.over = 45; if (m.over > 0) { m.over--; m.box.classList.toggle('over', m.over > 0); }
+      } else if (m.kind === 'vst') {
+        const i = E.vst(m.id, m.bid), t = !i ? '' : i.state === 'connecting' ? 'Connecting to the plugin host…' : i.state === 'error' ? 'Not running' : i.late > 0.02 ? `Running on the server, but ${Math.round(i.late * 100)}% of its audio is arriving late and is heard unprocessed. Raise Round trip in Setup.` : `Running on the server · ${E.vstDelayMs} ms round trip`;
+        if (m.el.textContent !== t) m.el.textContent = t;
       } else {
         const gr = E.gr(m.id, m.bid); m.v = Math.max(gr, m.v - 0.4);
         m.el.style.width = Math.min(100, m.v / 24 * 100) + '%'; m.txt.textContent = '−' + m.v.toFixed(1) + ' dB';
@@ -545,7 +647,7 @@ function frame() {
 }
 
 document.querySelectorAll('#viewSeg button').forEach(b => b.onclick = () => { S.view = b.dataset.v; ls('view', S.view); if (S.view !== 'daw') closePopup(); renderMixer(); });
-$('#setupBtn').onclick = async () => { saveMix(); await refreshSongs().catch(() => {}); showPage('setup'); };
+$('#setupBtn').onclick = async () => { saveMix(); await refreshSongs().catch(() => {}); S.plugins = await api('GET', '/api/plugins').catch(() => S.plugins); showPage('setup'); };
 $('#scBtn').onclick = scenesDialog;
 $('#midiBtn').onclick = midiDialog;
 $('#fsBtn').onclick = () => document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen().catch(() => {});
@@ -557,8 +659,12 @@ window.addEventListener('beforeunload', saveMix);
   try {
     const t = await api('GET', '/api/templates'); if (Array.isArray(t.templates) && t.templates.length) S.templates = t.templates;
     await refreshSongs();
+    S.settings = await api('GET', '/api/settings'); S.plugins = await api('GET', '/api/plugins').catch(() => S.plugins);
+    loadVaultList().then(() => S.page === 'setup' && renderSetup());
     const last = ls('song'); if (last && S.songs.some(s => s.id === last)) S.song = await api('GET', '/api/songs/' + last);
   } catch (e) { S.msg = 'Cannot reach the LiveWebMixer server: ' + e.message; }
   renderSetup(); pollSong(); requestAnimationFrame(frame);
 })();
+let linkT = 0;
+E.link.onchange = () => { clearTimeout(linkT); linkT = setTimeout(() => { if (S.page === 'mixer') renderPanelOrPopup(); }, 50); };
 window.LWM = { S, E, onMidi, midi };

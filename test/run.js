@@ -8,7 +8,7 @@ const j = async (m, u, b) => { const r = await fetch(base + u, { method: m, head
 const hasFfmpeg = spawnSync('ffmpeg', ['-version']).status === 0;
 
 (async () => {
-  for (const f of ['server.js', 'public/js/worklets.js']) assert.strictEqual(spawnSync(process.execPath, ['--check', path.join(root, f)]).status, 0, f + ' has a syntax error');
+  for (const f of ['server.js', 'lib/ws.js', 'lib/vault.js', 'lib/vsthost.js', 'public/js/worklets.js', 'public/js/vstworker.js']) assert.strictEqual(spawnSync(process.execPath, ['--check', path.join(root, f)]).status, 0, f + ' has a syntax error');
   for (const f of ['app.js', 'engine.js', 'model.js']) { const src = fs.readFileSync(path.join(root, 'public/js', f), 'utf8'); const t = path.join(data, f.replace('.js', '.mjs')); fs.writeFileSync(t, src); assert.strictEqual(spawnSync(process.execPath, ['--check', t]).status, 0, f + ' has a syntax error'); }
   const srv = spawn(process.execPath, [path.join(root, 'server.js')], { env: { ...process.env, DATA_DIR: data, PORT: port, HTTPS_PORT: '0' }, stdio: 'inherit' });
   try {
@@ -29,6 +29,10 @@ const hasFfmpeg = spawnSync('ffmpeg', ['-version']).status === 0;
       assert.strictEqual(t.status, 'ready', t.error); assert.strictEqual(t.name, 'Lead Vox'); assert.strictEqual(t.channels, 1);
       for (const q of ['flac', 'hi', 'lo']) { const m = await fetch(`${base}/media/${sid}/${t.id}/${q}`, { headers: { Range: 'bytes=0-99' } }); assert.strictEqual(m.status, 206); assert.strictEqual((await m.arrayBuffer()).byteLength, 100); }
     } else console.log('ffmpeg not installed here: skipped the transcoding test');
+    r = await j('GET', '/api/settings'); assert.strictEqual(r.body.vault, null);
+    r = await j('GET', '/api/vault/sessions'); assert.strictEqual(r.status, 400);
+    r = await j('PUT', '/api/settings', { vault: { url: 'ftp://x' } }); assert.strictEqual(r.status, 400);
+    r = await j('GET', '/api/plugins'); assert.strictEqual(r.status, 200); assert.ok(Array.isArray(r.body.plugins));
     r = await j('DELETE', '/api/songs/' + sid); assert.strictEqual(r.status, 200);
     assert.strictEqual((await j('GET', '/api/songs/' + sid)).status, 404);
     console.log('ok');

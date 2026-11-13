@@ -10,6 +10,9 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const { spawn, execFileSync } = require('child_process');
+const wsLib = require('./lib/ws');
+const vault = require('./lib/vault');
+const { VstHost } = require('./lib/vsthost');
 
 const VERSION = require('./package.json').version;
 const DATA = path.resolve(process.env.DATA_DIR || '/data');
@@ -23,6 +26,9 @@ const QUALITIES = { flac: { ext: 'flac', mime: 'audio/flac' }, hi: { ext: 'hi.op
 const MAX_UPLOAD = +(process.env.MAX_UPLOAD_MB || 4096) * 1024 * 1024;
 
 fs.mkdirSync(SONGS, { recursive: true });
+const SETTINGS = path.join(DATA, 'settings.json');
+const vst = new VstHost(DATA);
+const ARCH = process.arch === 'x64' ? 'x86_64' : process.arch === 'arm64' ? 'aarch64' : process.arch;
 
 // ---------- small helpers ----------
 const id = (n = 4) => crypto.randomBytes(n).toString('hex');
@@ -158,6 +164,48 @@ async function handleUpload(req, res, sid, name) {
   finally { fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {}); }
 }
 
+
+// ---------- settings (LiveVault connection) ----------
+const getSettings = () => readJson(SETTINGS, {});
+const vaultCfg = async () => (await getSettings()).vault || null;
+
+// ---------- server plugins ----------
+async function findVst3(dir, depth = 0) {
+  const out = [];
+  for (const e of await fsp.readdir(dir, { withFileTypes: true }).catch(() => [])) {
+    if (!e.isDirectory() || e.name === '__MACOSX') continue;
+    if (e.name.toLowerCase().endsWith('.vst3')) out.push(path.join(dir, e.name));
+    else if (depth < 3) out.push(...await findVst3(path.join(dir, e.name), depth + 1));
+  }
+  return out;
+}
+async function handlePluginUpload(req, res, name) {
+  name = path.basename(String(name || ''));
+  if (path.extname(name).toLowerCase() !== '.zip') return send(res, 400, { error: 'Upload the plugin as a zip of its .vst3 folder' });
+  const tmpDir = await fsp.mkdtemp(path.join(DATA, 'up-')), tmp = path.join(tmpDir, 'p.zip'), ex = path.join(tmpDir, 'x');
+  try {
+    await new Promise((resolve, reject) => {
+      let n = 0; const ws = fs.createWriteStream(tmp);
+      req.on('data', c => { n += c.length; if (n > 1024 * 1024 * 1024) { req.destroy(); ws.destroy(); reject(new Error('That zip is too large')); } });
+      req.pipe(ws); ws.on('finish', resolve); ws.on('error', reject); req.on('error', reject); req.on('aborted', () => reject(new Error('Upload interrupted')));
+    });
+    await fsp.mkdir(ex);
+    await run('unzip', ['-o', '-qq', tmp, '-d', ex]).catch(e => { if (!fs.readdirSync(ex).length) throw e; });
+    const found = await findVst3(ex);
+    if (!found.length) throw new Error('No .vst3 folder in that zip. A Linux VST3 plugin is a folder named Something.vst3; zip that folder and upload it.');
+    const good = found.filter(f => fs.existsSync(path.join(f, 'Contents', ARCH + '-linux')));
+    if (!good.length) throw new Error(`That is not a Linux build for this server. The plugin needs a Contents/${ARCH}-linux folder (Mac and Windows VST3 files cannot run here).`);
+    for (const f of good) {
+      const id = path.basename(f).replace(/[^\w .()+\-]/g, '_'), dest = path.join(vst.dir, id);
+      await fsp.rm(dest, { recursive: true, force: true });
+      await fsp.cp(f, dest, { recursive: true });
+      await vst.probe(id);
+    }
+    send(res, 200, { host: { ...vst.info, arch: ARCH }, plugins: await vst.list() });
+  } catch (e) { send(res, 400, { error: e.message }); }
+  finally { fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {}); }
+}
+
 // ---------- media (Range support so browsers can resume, cached forever per revision) ----------
 async function serveMedia(req, res, sid, tid, q) {
   const Q = QUALITIES[q];
@@ -195,10 +243,44 @@ async function handle(req, res) {
   const url = new URL(req.url, 'http://x');
   const p = decodeURIComponent(url.pathname), m = req.method;
   const seg = p.split('/').filter(Boolean);
+  if (seg[0] === 'media' && seg[1] === 'vault' && m === 'GET') return vault.media(await vaultCfg(), req, res, seg[2], seg[3]);
   if (seg[0] === 'media' && (m === 'GET' || m === 'HEAD')) return serveMedia(req, res, seg[1], seg[2], seg[3]);
   if (seg[0] !== 'api') return m === 'GET' || m === 'HEAD' ? serveStatic(req, res, p) : send(res, 405, 'Method not allowed');
 
   if (seg[1] === 'state' && m === 'GET') return send(res, 200, { version: VERSION, songs: await listSongs(), busy: running + queue.length });
+  if (seg[1] === 'settings') {
+    const st = await getSettings(), pub = v => ({ vault: v ? { url: v.url, hasToken: !!v.token, insecure: !!v.insecure } : null });
+    if (m === 'GET') return send(res, 200, pub(st.vault));
+    if (m === 'PUT') {
+      const b = await readBody(req);
+      if (b.vault === null) delete st.vault;
+      else if (b.vault) {
+        const v = { url: String(b.vault.url || '').trim().replace(/\/+$/, ''), token: b.vault.token != null && b.vault.token !== '' ? String(b.vault.token) : (st.vault || {}).token || '', insecure: !!b.vault.insecure };
+        if (!/^https?:\/\//.test(v.url)) return send(res, 400, { error: 'The LiveVault address must start with http:// or https://' });
+        const info = await vault.json(v, 'GET', '/api/v1/info');
+        if (info.name !== 'LiveVault') return send(res, 400, { error: 'That address answered, but it is not a LiveVault' });
+        st.vault = v;
+      }
+      await writeJson(SETTINGS, st);
+      return send(res, 200, pub(st.vault));
+    }
+  }
+  if (seg[1] === 'vault' && seg[2] === 'sessions') {
+    const cfg = await vaultCfg();
+    if (seg.length === 3 && m === 'GET') return send(res, 200, await vault.json(cfg, 'GET', '/api/v1/sessions' + (url.searchParams.get('q') ? '?q=' + vault.enc(url.searchParams.get('q')) : '')));
+    if (seg[4] === 'versions' && seg[5]) {
+      if (seg.length === 6 && m === 'GET') return send(res, 200, await vault.song(cfg, seg[3], seg[5]));
+      const mixPath = `/api/v1/sessions/${vault.enc(seg[3])}/versions/${vault.enc(seg[5])}/mixes/livewebmixer`;
+      if (seg[6] === 'mix' && m === 'GET') return send(res, 200, await vault.json(cfg, 'GET', mixPath).catch(e => { if (e.code === 404) return { scenes: [], current: null }; throw e; }));
+      if (seg[6] === 'mix' && m === 'PUT') { await vault.json(cfg, 'PUT', mixPath, await readBody(req)); return send(res, 200, { ok: true }); }
+    }
+  }
+  if (seg[1] === 'plugins') {
+    if (seg.length === 2 && m === 'GET') { const info = await vst.start(); return send(res, 200, { host: { ...info, arch: ARCH }, plugins: await vst.list() }); }
+    if (seg[2] === 'upload' && m === 'PUT') return handlePluginUpload(req, res, url.searchParams.get('name'));
+    if (seg[2] && seg[3] === 'probe' && m === 'POST') { await vst.probe(seg[2]); return send(res, 200, { host: { ...vst.info, arch: ARCH }, plugins: await vst.list() }); }
+    if (seg[2] && seg.length === 3 && m === 'DELETE') { await vst.remove(seg[2]); return send(res, 200, { host: { ...vst.info, arch: ARCH }, plugins: await vst.list() }); }
+  }
   if (seg[1] === 'templates') {
     const f = path.join(DATA, 'templates.json');
     if (m === 'GET') return send(res, 200, await readJson(f, { templates: null }));
@@ -255,10 +337,12 @@ async function handle(req, res) {
   }
   send(res, 404, { error: 'Not found' });
 }
-const listener = (req, res) => handle(req, res).catch(e => { if (!res.headersSent) send(res, e.code === 404 ? 404 : 500, { error: e.message }); else res.destroy(); });
+const listener = (req, res) => handle(req, res).catch(e => { if (!res.headersSent) send(res, [400, 404, 502].includes(e.code) ? e.code : 500, { error: e.message }); else res.destroy(); });
+// the plugin audio link is a WebSocket
+const upgrade = (req, socket) => { if (req.url.split('?')[0] !== '/ws/vst') return socket.destroy(); const ws = wsLib.accept(req, socket); if (ws) vst.attach(ws); };
 
 // ---------- start ----------
-http.createServer(listener).listen(PORT, () => console.log(`LiveWebMixer ${VERSION}: http on ${PORT}`));
+http.createServer(listener).on('upgrade', upgrade).listen(PORT, () => console.log(`LiveWebMixer ${VERSION}: http on ${PORT}`));
 
 // Browsers only allow the low-latency audio engine (AudioWorklet) and MIDI on https or localhost,
 // so the container also answers on https with its own self-signed certificate.
@@ -272,6 +356,8 @@ if (HTTPS_PORT) {
         '-addext', 'subjectAltName=DNS:livewebmixer,DNS:localhost,IP:127.0.0.1'], { stdio: 'ignore' });
     }
     https.createServer({ key: fs.readFileSync(useOwn ? process.env.TLS_KEY : key), cert: fs.readFileSync(useOwn ? process.env.TLS_CERT : cert) }, listener)
-      .listen(HTTPS_PORT, () => console.log(`LiveWebMixer ${VERSION}: https on ${HTTPS_PORT}`));
+      .on('upgrade', upgrade).listen(HTTPS_PORT, () => console.log(`LiveWebMixer ${VERSION}: https on ${HTTPS_PORT}`));
   } catch (e) { console.error('https is off:', e.message); }
 }
+process.on('SIGTERM', () => { vst.stop(); process.exit(0); });
+process.on('SIGINT', () => { vst.stop(); process.exit(0); });

@@ -10,6 +10,8 @@ A web-based multitrack mixing console for audio training. Load the stems of a so
 - 6 aux mixes (pre/post sends), 4 groups, 4 DCAs, reverb and delay FX sends, PFL, main LR.
 - Three layouts over the same mix: **SQ** (layers, selected-channel processing, sends on faders), **Console** (all strips, channel panel at the side), **DAW** (insert slots and sends on every strip).
 - Scenes per song, automatic save of the current mix, and Reference A/B against a finished mix.
+- **LiveVault link:** browse your LiveVault library from Setup, play a session version straight from LiveVault with nothing copied, and save mixes and scenes back to that version.
+- **Server plugins:** insert Linux VST3 plugins on input channels and the main bus. They run on the server, and the other channels are delay-compensated so everything stays lined up.
 - MIDI controller support with learn (faders, mutes, selects, master, play) that follows the current layer.
 
 ## Install
@@ -24,7 +26,7 @@ Browsers only allow the audio engine and MIDI on https (or localhost), so the co
 
 For TrueNAS, paste `truenas-app.yaml` into Apps > Discover Apps > Custom App > Install via YAML.
 
-Everything (songs, scenes, templates, certificate) is kept in the `livewebmixer-data` volume.
+Everything (songs, scenes, templates, plugins, certificate) is kept in the `livewebmixer-data` volume.
 
 There is no sign-in. Keep it on your own network or behind a proxy that asks for a password.
 
@@ -40,6 +42,29 @@ There is no sign-in. Keep it on your own network or behind a proxy that asks for
 
 Shift-drag a fader for fine moves, double-click it for 0 dB. Double-click most sliders to reset them.
 
+## LiveVault
+
+In Setup, the **LiveVault library** card takes the LiveVault address and an access token. Once connected it lists the sessions; pick one, pick a version, and open the mixer. Tracks are fetched from LiveVault through this server (the browser never sees the token), cached in the browser, and never copied into LiveWebMixer. The current mix and scenes are stored with that session version in LiveVault.
+
+The interface LiveVault has to offer is written down in `docs/LIVEVAULT-API.md`, and `test/mock-vault.js` is a small working example of it.
+
+## Server plugins (VST3)
+
+A browser cannot load VST plugins, so LiveWebMixer runs them in the container and sends the channel's audio there and back.
+
+1. In Setup, under **Server plugins**, upload a zip of the plugin's `.vst3` folder. It has to be a **Linux** build for the server's processor (the folder contains `Contents/x86_64-linux`). Mac and Windows VST3 files cannot run here.
+2. In the mixer, *＋ Add processing* on an input channel or Main LR lists the installed plugins.
+3. Adjust the plugin with the sliders in its card. There is no plugin window.
+
+What to expect:
+
+- Audio through a plugin comes back a fixed time later (the **Round trip** setting, 250 ms by default). Every other channel is held back by the same amount, so the mix stays in time and faders, EQ and the rest still respond instantly. Only the plugin's own controls, and Play/Stop, are heard that much later.
+- If the connection is too slow for the chosen round trip, the plugin card says how much audio arrived late; that audio is heard unprocessed instead of dropping out. Raise Round trip.
+- A plugin that crashes takes the plugin host down for a moment; it restarts by itself and that plugin is refused until you upload it again.
+- Plugins run with the container's permissions. Only install plugins you trust.
+
+The plugin host is Spotify's [pedalboard](https://github.com/spotify/pedalboard) library (GPL-3.0), installed in the image.
+
 ## Good to know
 
 - Tracks are held in browser memory while a song is open (the Setup window shows the estimate). Around 32 mono tracks of a five-minute song is about 1 GB; use a desktop browser for big sessions and fold dual-mono stems to mono.
@@ -51,4 +76,4 @@ Shift-drag a fader for fine moves, double-click it for 0 dB. Double-click most s
 
 Versions are major.minor.patch in `package.json`. A push to `main` builds and publishes `ghcr.io/leonidis2013/livewebmixer` (`latest` and the version tag).
 
-`npm test` runs a smoke test of the server (no packages to install).
+`npm test` runs a smoke test of the server (no packages to install). The GitHub build also runs `test/vst.js` and `test/run.js` inside the finished image before publishing it.

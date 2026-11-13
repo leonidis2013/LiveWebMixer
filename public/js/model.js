@@ -26,11 +26,12 @@ export const SPECS = {
   eq: { label: 'PEQ', long: 'Parametric EQ' },
   comp: { label: 'Comp', long: 'Compressor', dyn: 1, params: [{ k: 'thr', l: 'Threshold', min: -60, max: 0, u: 'dB', d: -20 }, { k: 'ratio', l: 'Ratio', min: 1, max: 20, log: 1, u: ':1', d: 3 }, { k: 'att', l: 'Attack', min: 0.1, max: 200, log: 1, u: 'ms', d: 10 }, { k: 'rel', l: 'Release', min: 10, max: 2000, log: 1, u: 'ms', d: 150 }, { k: 'knee', l: 'Knee', min: 0, max: 24, u: 'dB', d: 6 }, { k: 'makeup', l: 'Make-up', min: 0, max: 24, u: 'dB', d: 0 }] },
   deess: { label: 'De-ess', long: 'De-esser', dyn: 1, params: [{ k: 'freq', l: 'Frequency', min: 2000, max: 12000, log: 1, u: 'Hz', d: 6000 }, { k: 'thr', l: 'Threshold', min: -60, max: 0, u: 'dB', d: -30 }, { k: 'range', l: 'Max reduction', min: 0, max: 24, u: 'dB', d: 8 }] },
+  vst: { label: 'Plugin', long: 'Server plugin', remote: 1 },
 };
 export const EQ_BANDS = () => [{ t: 'lowshelf', f: 100, g: 0, q: 0.7 }, { t: 'peaking', f: 400, g: 0, q: 1 }, { t: 'peaking', f: 2500, g: 0, q: 1 }, { t: 'highshelf', f: 8000, g: 0, q: 0.7 }];
 export function newBlock(type, on = true) {
   const p = {};
-  if (type === 'eq') p.b = EQ_BANDS(); else for (const s of SPECS[type].params) p[s.k] = s.d;
+  if (type === 'eq') p.b = EQ_BANDS(); else if (type === 'vst') Object.assign(p, { plugin: '', name: '', values: {} }); else for (const s of SPECS[type].params) p[s.k] = s.d;
   return { id: uid(), type, on, p };
 }
 

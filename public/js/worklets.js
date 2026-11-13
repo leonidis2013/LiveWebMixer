@@ -153,3 +153,54 @@ class DeEss extends Dyn {
   }
 }
 registerProcessor('deess', DeEss);
+
+// Insert for a plugin that runs on the server. Audio is sent out in blocks and the processed blocks are
+// played back exactly `delay` samples later, so the channel stays lined up with the others (which are
+// delayed by the same amount). If a block is not back in time, the unprocessed signal is used instead.
+class Remote extends AudioWorkletProcessor {
+  constructor(o) {
+    super();
+    const po = o.processorOptions || {};
+    this.D = po.delay || 12000; this.h = po.h || 0; this.ch = po.ch || 1;
+    this.B = 1024; this.R = 65536; this.NB = this.R / this.B;
+    this.dry = [new Float32Array(this.R), new Float32Array(this.R)];
+    this.wet = [new Float32Array(this.R), new Float32Array(this.R)];
+    this.wseq = new Int32Array(this.NB).fill(-1);
+    this.n = 0; this.link = null; this.late = 0; this.total = 0;
+    this.port.onmessage = e => {
+      if (!e.data.port) return;
+      this.link = e.data.port;
+      this.link.onmessage = ev => {
+        const buf = ev.data, dv = new DataView(buf), seq = dv.getUint32(4, true), nch = dv.getUint16(8, true), frames = dv.getUint16(10, true);
+        if (frames !== this.B) return;
+        const f = new Float32Array(buf, 16), at = (seq * this.B) % this.R;
+        for (let c = 0; c < this.ch; c++) this.wet[c].set(f.subarray(Math.min(c, nch - 1) * frames, Math.min(c, nch - 1) * frames + frames), at);
+        this.wseq[seq % this.NB] = seq;
+      };
+    };
+  }
+  process(inputs, outputs) {
+    const inp = inputs[0], out = outputs[0], n = out[0].length, { B, R, D, ch } = this;
+    for (let i = 0; i < n; i++) {
+      const pos = this.n % R;
+      for (let c = 0; c < ch; c++) this.dry[c][pos] = inp.length ? (inp[c] || inp[0])[i] : 0;
+      const j = this.n - D;
+      if (j >= 0) {
+        const jp = j % R, blk = Math.floor(j / B), ok = this.wseq[blk % this.NB] === blk;
+        if (!ok) this.late++;
+        this.total++;
+        for (let c = 0; c < out.length; c++) out[c][i] = (ok ? this.wet : this.dry)[Math.min(c, ch - 1)][jp];
+      }
+      this.n++;
+      if (this.n % B === 0 && this.link) {       // a full block is ready: ship it
+        const seq = this.n / B - 1, buf = new ArrayBuffer(16 + ch * B * 4), dv = new DataView(buf), f = new Float32Array(buf, 16), at = (seq * B) % R;
+        dv.setUint32(0, this.h, true); dv.setUint32(4, seq, true); dv.setUint16(8, ch, true); dv.setUint16(10, B, true);
+        for (let c = 0; c < ch; c++) f.set(this.dry[c].subarray(at, at + B), c * B);
+        this.link.postMessage(buf, [buf]);
+      }
+    }
+    if (this.total >= 24000) { this.port.postMessage(this.late / this.total); this.late = 0; this.total = 0; }
+    return true;
+  }
+}
+registerProcessor('remote', Remote);

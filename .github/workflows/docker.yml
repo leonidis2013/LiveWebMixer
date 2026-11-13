@@ -36,12 +36,35 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Build once for this machine and test the real image before anything is published
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: livewebmixer:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Test the plugin host inside the image
+        run: docker run --rm -v "$PWD/test:/app/test:ro" livewebmixer:test node test/vst.js
+
+      - name: Test the server inside the image (ffmpeg, uploads, media)
+        run: docker run --rm -v "$PWD/test:/app/test:ro" livewebmixer:test node test/run.js
+
+      - name: Load real VST3 plugins (best effort, uses a free plugin set from Debian)
+        continue-on-error: true
+        run: |
+          docker run --rm --user root -v "$PWD/test:/app/test:ro" livewebmixer:test sh -c '
+            apt-get update -qq && apt-get install -y -qq --no-install-recommends lsp-plugins-vst3 >/dev/null &&
+            d=$(dirname "$(find /usr/lib -maxdepth 4 -name "*.vst3" | head -1)") && echo "plugins in $d" && node test/vst.js "$d"'
+
       # amd64 for a PC or server, arm64 for a Raspberry Pi
       - uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
+          cache-from: type=gha
           tags: |
             ghcr.io/leonidis2013/livewebmixer:latest
             ghcr.io/leonidis2013/livewebmixer:${{ steps.ver.outputs.v }}
