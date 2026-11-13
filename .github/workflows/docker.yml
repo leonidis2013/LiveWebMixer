@@ -55,8 +55,9 @@ jobs:
         continue-on-error: true
         run: |
           docker run --rm --user root -v "$PWD/test:/app/test:ro" livewebmixer:test sh -c '
-            apt-get update -qq && apt-get install -y -qq --no-install-recommends lsp-plugins-vst3 >/dev/null &&
-            d=$(dirname "$(find /usr/lib -maxdepth 4 -name "*.vst3" | head -1)") && echo "plugins in $d" && node test/vst.js "$d"'
+            export DEBIAN_FRONTEND=noninteractive; apt-get update -qq; apt-cache search vst3 | head -20;
+            for p in dragonfly-reverb-vst3 lsp-plugins-vst3; do apt-get install -y -qq --no-install-recommends $p >/dev/null 2>&1 && echo "installed $p"; done;
+            find /usr/lib -maxdepth 4 -name "*.vst3" | while read f; do echo "== $f"; mkdir -p /tmp/one && rm -rf /tmp/one/* && ln -s "$f" /tmp/one/ && timeout 400 node test/vst.js /tmp/one; done'
 
       # amd64 for a PC or server, arm64 for a Raspberry Pi
       - uses: docker/build-push-action@v6

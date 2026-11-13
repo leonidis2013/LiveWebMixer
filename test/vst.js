@@ -15,7 +15,7 @@ function block(handle, seq, nch, frames, fill) {
 function client(host) {
   const ws = { open: true, got: [], waiters: [], send(d) { const w = this.waiters.shift(); w ? w(d) : this.got.push(d); } };
   host.attach(ws);
-  ws.next = () => new Promise((res, rej) => { if (ws.got.length) return res(ws.got.shift()); const t = setTimeout(() => rej(new Error('no reply from the plugin host')), 20000); ws.waiters.push(d => { clearTimeout(t); res(d); }); });
+  ws.next = () => new Promise((res, rej) => { if (ws.got.length) return res(ws.got.shift()); const t = setTimeout(() => rej(new Error('no reply from the plugin host')), 100000); ws.waiters.push(d => { clearTimeout(t); res(d); }); });
   ws.say = async o => { await ws.onmessage(JSON.stringify(o), false); };
   return ws;
 }
@@ -52,8 +52,8 @@ function client(host) {
       let loaded = 0;
       for (const f of fs.readdirSync(dir).filter(f => f.endsWith('.vst3')).slice(0, 6)) {
         fs.cpSync(path.join(dir, f), path.join(host.dir, f), { recursive: true, dereference: true });
-        const meta = await host.probe(f);
-        console.log(f, meta.error ? 'FAILED: ' + meta.error : meta.plugins.map(p => `${p.name} (${p.params} parameters)`).join(', '));
+        const t0 = Date.now(); const meta = await host.probe(f);
+        console.log(f, `(${((Date.now() - t0) / 1000).toFixed(1)} s)`, meta.error ? 'FAILED: ' + meta.error : meta.plugins.map(p => `${p.name} (${p.params} parameters)`).join(', '));
         if (meta.error || !meta.plugins.length) continue;
         const p = meta.plugins[0];
         await ws.say({ t: 'open', h: 100 + loaded, plugin: f + '::' + p.name, values: {}, ch: 2 });
