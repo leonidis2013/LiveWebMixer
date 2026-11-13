@@ -5,7 +5,7 @@
 const http = require('http'), fs = require('fs'), path = require('path');
 const data = path.resolve(process.argv[2] || './data'), port = +(process.argv[3] || 8095), token = process.argv[4] || 'test-token';
 const EXT = { flac: ['flac', 'audio/flac'], hi: ['hi.opus', 'audio/ogg'], lo: ['lo.opus', 'audio/ogg'] };
-const mixes = new Map();
+const mixes = new Map(), recordings = [];
 const songs = () => fs.readdirSync(path.join(data, 'songs')).map(d => { try { return JSON.parse(fs.readFileSync(path.join(data, 'songs', d, 'song.json'), 'utf8')); } catch { return null; } }).filter(Boolean);
 const json = (res, code, body) => { const b = Buffer.from(JSON.stringify(body)); res.writeHead(code, { 'Content-Type': 'application/json', 'Content-Length': b.length }); res.end(b); };
 const VERSIONS = ['1.1.0', '1.0.0'];
@@ -15,6 +15,7 @@ http.createServer((req, res) => {
   if (req.headers.authorization !== 'Bearer ' + token) return json(res, 401, { error: 'Missing or wrong access token' });
   if (seg[0] !== 'api' || seg[1] !== 'v1') return json(res, 404, { error: 'Not found' });
   if (seg[2] === 'info') return json(res, 200, { name: 'LiveVault', version: '0.0.0-mock', api: 1 });
+  if (seg[2] === 'test-recordings') return json(res, 200, { recordings });
   if (seg[2] === 'sessions' && seg.length === 3) {
     const q = (url.searchParams.get('q') || '').toLowerCase();
     return json(res, 200, { sessions: songs().filter(s => s.name.toLowerCase().includes(q)).map(s => ({ id: s.id, name: s.name, latest: VERSIONS[0], versions: VERSIONS, tags: ['mock'], tracks: s.tracks.length, duration: Math.max(0, ...s.tracks.map(t => t.duration)) })) });
@@ -30,6 +31,7 @@ http.createServer((req, res) => {
       return json(res, 200, { id: s.id, name: s.name, version: seg[5], versions: VERSIONS, tags: ['mock'], notes: 'Served by the mock LiveVault.',
         tracks: use.map(t => ({ id: t.id, name: t.name, file: s.id + '.' + t.id, role: t.role, channels: t.channels, duration: t.duration, sizes: t.sizes })) });
     }
+    if (seg[6] === 'recordings' && req.method === 'PUT') { let n = 0; req.on('data', d => n += d.length); req.on('end', () => { recordings.push({ session: seg[3], version: seg[5], name: url.searchParams.get('name'), start: +url.searchParams.get('start'), bytes: n }); json(res, 200, { id: 'r' + recordings.length }); }); return; }
     if (seg[6] === 'mixes' && seg[7] === 'livewebmixer') {
       const key = seg[3] + '@' + seg[5];
       if (req.method === 'GET') return mixes.has(key) ? json(res, 200, mixes.get(key)) : json(res, 404, { error: 'No mix saved yet' });

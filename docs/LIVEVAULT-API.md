@@ -78,5 +78,13 @@ LiveWebMixer's mix file for that version: one JSON document that LiveVault store
 document and answers `{ "ok": true }`. Documents can reach a few hundred kB. The contents are LiveWebMixer's
 business; LiveVault may show the scene names (`scenes[].name`) but should not edit the rest.
 
-Per-user mixes (so each trainee has their own) are not in version 1: when LiveVault has logins, the plan is one
-token per user, with LiveVault keeping this document per token owner. Nothing in LiveWebMixer needs to change for that.
+## `PUT /api/v1/sessions/<id>/versions/<version>/recordings?name=<name>&start=<seconds>`
+
+A Main LR take recorded in LiveWebMixer: the body is a WAV file (48 kHz, 16-bit stereo), `Content-Type: audio/wav`.
+`start` is where in the song the take's first sample is. LiveVault keeps it with that version for review, linked to
+the token owner's mix, and answers with the stored recording as JSON (at least `{ "id": "…" }`).
+
+## Per-user mixes
+
+LiveVault has logins, and each person makes their own token. LiveVault keeps the mix document (and the recordings)
+per token owner, so each trainee has their own mix of every version. Nothing in LiveWebMixer needs to know.

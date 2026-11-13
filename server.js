@@ -273,6 +273,7 @@ async function handle(req, res) {
       const mixPath = `/api/v1/sessions/${vault.enc(seg[3])}/versions/${vault.enc(seg[5])}/mixes/livewebmixer`;
       if (seg[6] === 'mix' && m === 'GET') return send(res, 200, await vault.json(cfg, 'GET', mixPath).catch(e => { if (e.code === 404) return { scenes: [], current: null }; throw e; }));
       if (seg[6] === 'mix' && m === 'PUT') { await vault.json(cfg, 'PUT', mixPath, await readBody(req)); return send(res, 200, { ok: true }); }
+      if (seg[6] === 'recording' && m === 'PUT') return send(res, 200, await vault.upload(cfg, `/api/v1/sessions/${vault.enc(seg[3])}/versions/${vault.enc(seg[5])}/recordings?` + new URLSearchParams({ name: url.searchParams.get('name') || '', start: url.searchParams.get('start') || '0' }), req, 'audio/wav'));
     }
   }
   if (seg[1] === 'plugins') {

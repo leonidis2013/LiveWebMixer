@@ -149,3 +149,5 @@ dialog .li { display:flex; gap:6px; align-items:center; padding:6px 0; border-to
 .strip input[type=range]::-moz-range-thumb { width:8px; height:11px; border:0; border-radius:2px; background:var(--acc); }
 .strip .pn::-webkit-slider-thumb { background:var(--knob); } .strip .pn::-moz-range-thumb { background:var(--knob); }
 .blk.plug { width:340px; }
+button.rec { color:var(--bad); }
+button.rec.on { background:var(--bad); color:#fff; }

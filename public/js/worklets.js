@@ -204,3 +204,22 @@ class Remote extends AudioWorkletProcessor {
   }
 }
 registerProcessor('remote', Remote);
+
+// Records the Main LR bus (post fader) while recording is switched on; hands it to the page in half-second blocks.
+class Recorder extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.on = false; this.n = 0; this.fresh();
+    this.port.onmessage = e => { if (e.data.on) { this.on = true; this.fresh(); } else { this.on = false; this.flush(true); } };
+  }
+  fresh() { this.L = new Float32Array(24000); this.R = new Float32Array(24000); this.n = 0; }
+  flush(last) { const L = this.L.slice(0, this.n), R = this.R.slice(0, this.n); this.port.postMessage({ L, R, last }, [L.buffer, R.buffer]); this.fresh(); }
+  process(inputs) {
+    if (!this.on) return true;
+    const inp = inputs[0], a = inp[0], b = inp[1] || inp[0];
+    if (!a) return true;
+    for (let i = 0; i < a.length; i++) { this.L[this.n] = a[i]; this.R[this.n] = b[i]; if (++this.n === this.L.length) this.flush(false); }
+    return true;
+  }
+}
+registerProcessor('recorder', Recorder);

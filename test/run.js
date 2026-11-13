@@ -28,6 +28,16 @@ const hasFfmpeg = spawnSync('ffmpeg', ['-version']).status === 0;
       for (let i = 0; i < 100; i++) { t = (await j('GET', '/api/songs/' + sid)).body.tracks[0]; if (t.status === 'ready' || t.status === 'error') break; await new Promise(r => setTimeout(r, 100)); }
       assert.strictEqual(t.status, 'ready', t.error); assert.strictEqual(t.name, 'Lead Vox'); assert.strictEqual(t.channels, 1);
       for (const q of ['flac', 'hi', 'lo']) { const m = await fetch(`${base}/media/${sid}/${t.id}/${q}`, { headers: { Range: 'bytes=0-99' } }); assert.strictEqual(m.status, 206); assert.strictEqual((await m.arrayBuffer()).byteLength, 100); }
+      // a Main LR take goes through to LiveVault (the mock LiveVault serves this data folder's songs)
+      const vport = 18900 + Math.floor(Math.random() * 90), mock = spawn(process.execPath, [path.join(root, 'test/mock-vault.js'), data, String(vport), 'tok'], { stdio: 'ignore' });
+      try {
+        for (let i = 0; i < 50; i++) { try { await fetch(`http://127.0.0.1:${vport}/`); break; } catch { await new Promise(r => setTimeout(r, 100)); } }
+        r = await j('PUT', '/api/settings', { vault: { url: `http://127.0.0.1:${vport}`, token: 'tok' } }); assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+        r = await fetch(`${base}/api/vault/sessions/${sid}/versions/1.1.0/recording?name=Take%201&start=4.5`, { method: 'PUT', body: fs.readFileSync(wav) }); assert.strictEqual(r.status, 200);
+        const got = (await (await fetch(`http://127.0.0.1:${vport}/api/v1/test-recordings`, { headers: { Authorization: 'Bearer tok' } })).json()).recordings;
+        assert.deepStrictEqual(got, [{ session: sid, version: '1.1.0', name: 'Take 1', start: 4.5, bytes: fs.statSync(wav).size }]);
+        await j('PUT', '/api/settings', { vault: null });
+      } finally { mock.kill(); }
     } else console.log('ffmpeg not installed here: skipped the transcoding test');
     r = await j('GET', '/api/settings'); assert.strictEqual(r.body.vault, null);
     r = await j('GET', '/api/vault/sessions'); assert.strictEqual(r.status, 400);

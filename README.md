@@ -11,6 +11,7 @@ A web-based multitrack mixing console for audio training. Load the stems of a so
 - Three layouts over the same mix: **SQ** (layers, selected-channel processing, sends on faders), **Console** (all strips, channel panel at the side), **DAW** (insert slots and sends on every strip).
 - Scenes per song, automatic save of the current mix, and Reference A/B against a finished mix.
 - **LiveVault link:** browse your LiveVault library from Setup, play a session version straight from LiveVault with nothing copied, and save mixes and scenes back to that version.
+- **Record** the Main LR mix while the song plays, then download the take as a WAV or keep it in LiveVault, linked to the session version and your mix, for review.
 - **Server plugins:** insert Linux VST3 plugins on input channels and the main bus. They run on the server, and the other channels are delay-compensated so everything stays lined up.
 - MIDI controller support with learn (faders, mutes, selects, master, play) that follows the current layer.
 
@@ -45,6 +46,10 @@ Shift-drag a fader for fine moves, double-click it for 0 dB. Double-click most s
 ## LiveVault
 
 In Setup, the **LiveVault library** card takes the LiveVault address and an access token. Once connected it lists the sessions; pick one, pick a version, and open the mixer. Tracks are fetched from LiveVault through this server (the browser never sees the token), cached in the browser, and never copied into LiveWebMixer. The current mix and scenes are stored with that session version in LiveVault.
+
+In LiveVault, make the access token under **My account > Access tokens**. It acts as you: the library shows the sessions you may see, and mixes and takes are saved under your name (one mix per person for each version). Use LiveVault's http port as the address, for example `http://192.168.1.20:9580`. **Open in LiveWebMixer** on a session in LiveVault opens that version here.
+
+**● Record** in the transport bar starts playback and records the Main LR bus (after the master fader, no matter which mix you are listening to). Pause, move the play position or reach the end to finish the take; name it, listen back, and download it or save it to LiveVault, where it sits with the session version for review notes. Loop switches off while recording so the take lines up with the song, and the delay of server plugins is allowed for.
 
 The interface LiveVault has to offer is written down in `docs/LIVEVAULT-API.md`, and `test/mock-vault.js` is a small working example of it.
 

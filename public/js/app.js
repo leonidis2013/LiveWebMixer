@@ -271,8 +271,9 @@ function renderTransport() {
   const syncRef = () => { ref.classList.toggle('on', S.m.monitor === 'ref'); ref.textContent = S.m.monitor === 'ref' ? 'Hearing: reference' : 'Reference A/B'; if (S.m.monitor !== 'ref') mon.value = S.m.monitor; };
   const pflClr = h('button', { class: 'sm pfl hide', onclick: () => { for (const s of Object.values(S.m.strips)) s.pfl = false; E.updateAll(); renderMixer(); } }, 'Clear PFL');
   const lat = h('span', { class: 'st' });
+  const rec = h('button', { class: 'sm rec', title: 'Record the Main LR mix while the song plays. Pause or move the play position to end the take.', onclick: () => E.recording ? endTake() : startTake() }, '● Record');
   bar.append(play, h('button', { class: 'sm', title: 'Back to start', onclick: () => E.seek(lp.on && lp.a != null ? lp.a : 0) }, '⏮'), time, seek, bA, bB, bL, h('span', { class: 'sep' }),
-    h('label', {}, 'Listen'), mon, ref, refTrim, pflClr, lat);
+    h('label', {}, 'Listen'), mon, ref, refTrim, pflClr, h('span', { class: 'sep' }), rec, lat);
   syncRef();
   tUI = { tick() {
     play.textContent = E.playing ? 'Pause' : 'Play';
@@ -280,8 +281,74 @@ function renderTransport() {
     if (!drag) seek.value = E.time;
     pflClr.classList.toggle('hide', !Object.values(S.m.strips).some(s => s.pfl));
     lat.textContent = `${QN[S.quality]} · ${E.latencyMs.toFixed(0)} ms output`;
+    rec.classList.toggle('on', E.recording); rec.textContent = E.recording ? `■ Stop take ${fmtTime(E.time - (take.pos || 0))}` : '● Record';
   } };
 }
+
+// =====================================================================================
+// Recording the Main LR mix (download it, or keep it in LiveVault for review)
+// =====================================================================================
+const take = { start: 0, pos: 0, sawPlay: false, busy: false };
+function startTake() {
+  if (E.recording || take.busy) return;
+  if (S.loop.on) { S.loop.on = false; E.setLoop(null); renderTransport(); }     // a take is one straight pass, so it lines up with the song
+  take.pos = E.time; take.start = Math.max(0, E.time - E.mainLatency); take.sawPlay = false;   // the take's first sample is what Main LR played at that point in the song
+  E.recStart(); if (!E.playing) E.play();
+}
+async function endTake() {
+  if (!E.recording || take.busy) return;
+  take.busy = true;
+  const t = await E.recStop();
+  take.busy = false;
+  if (E.playing) E.pause();
+  if (t && t.frames > 48000 * 0.5) takeDialog(t, take.start);
+}
+// The take ends when playback stops or jumps (pause, seek, end of song, back to start).
+function watchTake() { if (!E.recording || take.busy) return; if (E.playing) take.sawPlay = true; else if (take.sawPlay) endTake(); }
+const _seek = E.seek.bind(E); E.seek = sec => { if (E.recording) endTake(); _seek(sec); };
+function wavBlob(t) {
+  const n = t.frames, buf = new ArrayBuffer(44 + n * 4), v = new DataView(buf);
+  const w = (o, str) => { for (let i = 0; i < str.length; i++) v.setUint8(o + i, str.charCodeAt(i)); };
+  w(0, 'RIFF'); v.setUint32(4, 36 + n * 4, true); w(8, 'WAVE'); w(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 2, true);
+  v.setUint32(24, 48000, true); v.setUint32(28, 48000 * 4, true); v.setUint16(32, 4, true); v.setUint16(34, 16, true); w(36, 'data'); v.setUint32(40, n * 4, true);
+  const out = new Int16Array(buf, 44); let k = 0;
+  for (let b = 0; b < t.L.length; b++) { const L = t.L[b], R = t.R[b]; for (let i = 0; i < L.length; i++) { const l = Math.max(-1, Math.min(1, L[i])), r = Math.max(-1, Math.min(1, R[i])); out[k++] = l * 32767; out[k++] = r * 32767; } }
+  return new Blob([buf], { type: 'audio/wav' });
+}
+function takeDialog(t, start) {
+  const d = $('#dlg'), blob = wavBlob(t), secs = t.frames / 48000, v = S.song.vault;
+  const name = h('input', { type: 'text', class: 'grow', value: `Take ${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` });
+  const url = URL.createObjectURL(blob); let msg = '', busy = false;
+  const close = () => { URL.revokeObjectURL(url); d.close(); };
+  const upload = async () => {
+    busy = true; msg = 'Saving the mix…'; draw();
+    try {
+      saveMix(); await api('PUT', mixUrl(), S.mix);   // the take is linked to the mix that made it
+      await new Promise((resolve, reject) => {
+        const x = new XMLHttpRequest();
+        x.open('PUT', `/api/vault/sessions/${encodeURIComponent(v.id)}/versions/${encodeURIComponent(v.version)}/recording?name=${encodeURIComponent(name.value.trim())}&start=${start.toFixed(3)}`);
+        x.upload.onprogress = e => { msg = `Uploading to LiveVault… ${Math.round(e.loaded / e.total * 100)}%`; const el = $('#takeMsg'); if (el) el.textContent = msg; };
+        x.onload = () => x.status === 200 ? resolve() : reject(new Error(JSON.parse(x.responseText || '{}').error || 'Upload failed'));
+        x.onerror = () => reject(new Error('Upload failed: connection lost'));
+        x.send(blob);
+      });
+      close(); flash('Recording saved to LiveVault');
+    } catch (e) { busy = false; msg = e.message; draw(); }
+  };
+  const draw = () => fill(d, h('h2', {}, 'Main LR take'),
+    h('div', { class: 'note', style: 'margin-bottom:8px' }, `${fmtTime(secs)} recorded from ${fmtTime(start)} · ${fmtMB(blob.size)} WAV, 48 kHz 16-bit`),
+    h('audio', { controls: true, src: url, style: 'width:100%;margin-bottom:8px' }),
+    h('div', { class: 'row', style: 'margin-bottom:8px' }, h('span', { class: 'note' }, 'Name'), name),
+    v && h('div', { class: 'note', style: 'margin-bottom:8px' }, `Saving keeps it with version ${v.version} in LiveVault, linked to your current mix, for review.`),
+    msg && h('div', { class: busy ? 'note' : 'errbox', id: 'takeMsg', style: 'margin-bottom:8px' }, msg),
+    h('div', { class: 'row' }, v && h('button', { class: 'on', disabled: busy, onclick: upload }, 'Save to LiveVault'),
+      h('a', { href: url, download: `${S.song.name} - ${name.value.trim() || 'take'}.wav` }, h('button', {}, 'Download WAV')), h('span', { class: 'grow' }),
+      h('button', { class: 'danger', disabled: busy, onclick: close }, 'Discard')),
+    !v && h('div', { class: 'note', style: 'margin-top:8px' }, 'Open a session from the LiveVault library to keep takes there for review.'));
+  d.onclose = () => URL.revokeObjectURL(url);
+  draw(); d.showModal();
+}
+function flash(text) { const el = h('span', { class: 'st ok' }, text); $('#status').append(el); setTimeout(() => el.remove(), 4000); }
 
 // =====================================================================================
 // Console surface
@@ -642,6 +709,7 @@ function frame() {
       }
     }
     tUI.tick && tUI.tick();
+    watchTake();
   }
   requestAnimationFrame(frame);
 }
@@ -663,6 +731,14 @@ window.addEventListener('beforeunload', saveMix);
     loadVaultList().then(() => S.page === 'setup' && renderSetup());
     const last = ls('song'); if (last && S.songs.some(s => s.id === last)) S.song = await api('GET', '/api/songs/' + last);
   } catch (e) { S.msg = 'Cannot reach the LiveWebMixer server: ' + e.message; }
+  // "Open in LiveWebMixer" in LiveVault links here as #vault=<session id>&version=<version>
+  const hp = new URLSearchParams(location.hash.slice(1));
+  if (hp.get('vault')) {
+    history.replaceState(null, '', location.pathname + location.search);
+    if (!S.settings.vault) S.msg = 'To open LiveVault sessions, connect LiveVault first: LiveVault library > address and access token.';
+    else try { S.song = await api('GET', `/api/vault/sessions/${encodeURIComponent(hp.get('vault'))}/versions/${encodeURIComponent(hp.get('version') || '')}`); ls('song', ''); }
+    catch (e) { S.msg = 'Could not open that LiveVault session: ' + e.message; }
+  }
   renderSetup(); pollSong(); requestAnimationFrame(frame);
 })();
 let linkT = 0;

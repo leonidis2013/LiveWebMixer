@@ -51,7 +51,18 @@ export class Engine {
     this.tp = new AudioWorkletNode(ctx, 'transport', { numberOfInputs: 0, numberOfOutputs: chCounts.length, outputChannelCount: chCounts });
     this.tp.port.onmessage = e => { this.pos = e.data.pos; this.playing = e.data.playing; this.onstate && this.onstate(e.data); };
     this.chCounts = chCounts;
+    // Main LR recorder: the audio thread hands over blocks while a take is running
+    this.rec = new AudioWorkletNode(ctx, 'recorder', { numberOfInputs: 1, numberOfOutputs: 1, channelCount: 2, channelCountMode: 'explicit', outputChannelCount: [1] });
+    const sink = ctx.createGain(); sink.gain.value = 0; this.rec.connect(sink); sink.connect(ctx.destination);
+    this.take = null;
+    this.rec.port.onmessage = e => { const t = this.take; if (!t) return; t.L.push(e.data.L); t.R.push(e.data.R); t.frames += e.data.L.length; if (e.data.last && t.done) { const d = t.done; t.done = null; d(t); } };
   }
+  recStart() { this.take = { L: [], R: [], frames: 0, done: null }; this.rec.port.postMessage({ on: true }); }
+  // Stop the take; resolves with { L: [Float32Array…], R: […], frames } once the audio thread has handed over its last block.
+  recStop() { const t = this.take; if (!t) return Promise.resolve(null); return new Promise(res => { t.done = x => { this.take = null; res(x); }; this.rec.port.postMessage({ on: false }); }); }
+  get recording() { return !!this.take; }
+  // How far Main LR runs behind the play position (server plugins and their delay compensation), in seconds.
+  get mainLatency() { return this.refDelay ? this.refDelay.delayTime.value : 0; }
 
   // Download (or take from the browser's cache), decode, and hand one track to the audio thread.
   async loadTrack(i, url, onBytes) {
@@ -100,7 +111,7 @@ export class Engine {
     if (refOut >= 0) this.tp.connect(this.refDelay, refOut);
 
     const mk = id => { const sn = this.node(mixer.strips[id]); this.n.set(id, sn); return sn; };
-    const main = mk('main'); main.post.connect(this.mon.main);
+    const main = mk('main'); main.post.connect(this.mon.main); main.post.connect(this.rec);
     for (let i = 1; i <= NG; i++) { const g = mk('g' + i); g.lrG = this.g(g.post, main.in); }
     for (const a of AUX) mk(a).post.connect(this.mon[a]);
     for (const f of FX) { const sn = mk(f); sn.lrG = this.g(sn.post, main.in); sn.fxIn = c.createGain(); this.fxSet(f); }
