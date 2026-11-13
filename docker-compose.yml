@@ -1,0 +1,23 @@
+# docker compose up -d
+# Then open https://<this machine's IP>:8443 and accept the certificate warning once.
+# (Browsers only allow the low-latency audio engine on https. Port 8080 is plain http,
+#  for a reverse proxy that adds https itself.)
+# Songs, scenes and templates are kept in the livewebmixer-data volume.
+services:
+  livewebmixer:
+    image: ghcr.io/leonidis2013/livewebmixer:latest
+    build: .
+    container_name: livewebmixer
+    restart: unless-stopped
+    ports:
+      - "8443:8443"
+      - "8080:8080"
+    volumes:
+      - livewebmixer-data:/data
+    environment:
+      TZ: America/Chicago
+      # optional: largest single upload in MB (a zip of a whole song counts as one upload)
+      # MAX_UPLOAD_MB: "4096"
+
+volumes:
+  livewebmixer-data:
