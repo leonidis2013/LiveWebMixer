@@ -69,7 +69,8 @@ class Vst:
         self.plug = pedalboard.load_plugin(path, plugin_name=name) if name else pedalboard.load_plugin(path)
         if not getattr(self.plug, 'is_effect', True):
             raise ValueError('This plugin is an instrument, not an effect')
-        self.dup = False
+        self.mode = 0
+        self.failed = False
 
     def _one(self, name, p):
         try:
@@ -97,15 +98,16 @@ class Vst:
         return self._one(name, p)
 
     def process(self, x):
-        if not self.dup:
+        n = x.shape[1]
+        if self.mode == 0:
             try:
-                return self.plug.process(x, SR, buffer_size=x.shape[1], reset=False)
+                return self.plug.process(x, SR, buffer_size=n, reset=False)
             except Exception:
-                if x.shape[0] != 1:
-                    raise
-                self.dup = True          # plugin has no mono layout: feed it the same signal on both sides
-        y = self.plug.process(np.concatenate([x, x]), SR, buffer_size=x.shape[1], reset=False)
-        return y
+                # the plugin does not take this channel count: adapt once and remember
+                self.mode = 1 if x.shape[0] == 1 else 2
+        if self.mode == 1:      # mono channel into a stereo-only plugin
+            return self.plug.process(np.concatenate([x, x]), SR, buffer_size=n, reset=False)
+        return self.plug.process(x.mean(axis=0, keepdims=True), SR, buffer_size=n, reset=False)   # stereo into a mono-only plugin
 
 
 def plugin_names(path):
@@ -171,7 +173,9 @@ def audio(payload):
                     fixed[:, frames - n:] = y[:, y.shape[1] - n:]
                 y = fixed
         except Exception as e:
-            sys.stderr.write('plugin process error: %s\n' % e)
+            if not getattr(v, 'failed', False):
+                sys.stderr.write('plugin process error (audio passes unprocessed): %s\n' % e)
+                v.failed = True
             y = x
     send(1, payload[:16] + np.ascontiguousarray(y, dtype='<f4').tobytes())
 
