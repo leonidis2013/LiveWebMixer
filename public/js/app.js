@@ -73,7 +73,7 @@ function renderSetup() {
   // songs
   const nameIn = h('input', { type: 'text', placeholder: 'New song name', class: 'grow' });
   const add = () => nameIn.value.trim() && act(async () => { const s = await api('POST', '/api/songs', { name: nameIn.value.trim() }); await refreshSongs(); S.song = s; ls('song', s.id); });
-  nameIn.onkeydown = e => e.key === 'Enter' && add();
+  nameIn.onkeydown = e => { if (e.key === 'Enter') add(); };   // a handler that returns false would cancel every key
   root.append(h('div', { class: 'card songs' }, h('h2', {}, 'Songs'),
     S.songs.map(s => h('button', { class: 'song' + (S.song && S.song.id === s.id ? ' on' : ''), onclick: () => selectSong(s.id) }, s.name, h('small', {}, s.tracks + ' tracks'))),
     !S.songs.length && h('div', { class: 'note', style: 'margin-bottom:8px' }, 'No songs yet. Name one to start.'),
