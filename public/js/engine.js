@@ -47,7 +47,10 @@ export class Engine {
     for (const sn of this.n.values()) this.dispose(sn);
     this.n.clear(); this.pos = 0; this.len = 0; this.playing = false; this.loop = null; this.out = null;
     const ctx = this.ctx = new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' });
-    await ctx.audioWorklet.addModule('js/worklets.js');
+    ctx.resume().catch(() => {});
+    // Safari holds the audio engine until the page has been clicked; never wait forever for it
+    await Promise.race([ctx.audioWorklet.addModule('js/worklets.js'), new Promise((_, no) => setTimeout(() => no(new Error(ctx.state === 'running'
+      ? 'The audio engine did not start. Reload the page and try again.' : 'The browser is waiting for a click before it starts audio. Press Open mixer.')), 8000))]);
     this.tp = new AudioWorkletNode(ctx, 'transport', { numberOfInputs: 0, numberOfOutputs: chCounts.length, outputChannelCount: chCounts });
     this.tp.port.onmessage = e => { this.pos = e.data.pos; this.playing = e.data.playing; this.onstate && this.onstate(e.data); };
     this.chCounts = chCounts;

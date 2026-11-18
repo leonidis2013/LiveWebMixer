@@ -752,7 +752,11 @@ window.addEventListener('beforeunload', saveMix);
     } catch (e) { S.msg = 'Could not open that LiveVault session: ' + e.message; }
   }
   renderSetup(); pollSong(); requestAnimationFrame(frame);
-  if (straightIn && S.song && S.song.tracks.some(t => t.role === 'channel') && Engine.supported()) openMixer();
+  // Opened from LiveVault: one click starts the mixer (browsers, Safari above all, only start audio after a click on the page)
+  if (straightIn && S.song && S.song.tracks.some(t => t.role === 'channel') && Engine.supported()) {
+    const box = $('#load'), go = h('button', { class: 'on', style: 'width:100%;margin-top:6px', onclick: () => { box.classList.add('hide'); go.remove(); openMixer(); } }, 'Open the mixer');
+    box.classList.remove('hide'); $('#loadBar').style.width = '0'; $('#loadTxt').textContent = `${S.song.name} from LiveVault is ready.`; $('#loadTxt').after(go);
+  }
 })();
 let linkT = 0;
 E.link.onchange = () => { clearTimeout(linkT); linkT = setTimeout(() => { if (S.page === 'mixer') renderPanelOrPopup(); }, 50); };
