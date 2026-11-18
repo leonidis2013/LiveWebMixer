@@ -47,7 +47,9 @@ Shift-drag a fader for fine moves, double-click it for 0 dB. Double-click most s
 
 In Setup, the **LiveVault library** card takes the LiveVault address and an access token. Once connected it lists the sessions; pick one, pick a version, and open the mixer. Tracks are fetched from LiveVault through this server (the browser never sees the token), cached in the browser, and never copied into LiveWebMixer. The current mix and scenes are stored with that session version in LiveVault.
 
-In LiveVault, make the access token under **My account > Access tokens**. It acts as you: the library shows the sessions you may see, and mixes and takes are saved under your name (one mix per person for each version). Use LiveVault's http port as the address, for example `http://192.168.1.20:9580`. **Open in LiveWebMixer** on a session in LiveVault opens that version here.
+The easy way: press **Open in LiveWebMixer** on a session in LiveVault (1.4 or newer). LiveWebMixer connects as you, opens that version and goes straight into the mixer, with channels in LiveVault's order and instrument-group colors, and the header links back to the session in LiveVault.
+
+To connect by hand instead, make an access token in LiveVault under **My account > Access tokens**. It acts as you: the library shows the sessions you may see, and mixes and takes are saved under your name (one mix per person for each version). Use LiveVault's http port as the address, for example `http://192.168.1.20:9580`. **Open in LiveWebMixer** on a session in LiveVault opens that version here.
 
 **● Record** in the transport bar starts playback and records the Main LR bus (after the master fader, no matter which mix you are listening to). Pause, move the play position or reach the end to finish the take; name it, listen back, and download it or save it to LiveVault, where it sits with the session version for review notes. Loop switches off while recording so the take lines up with the song, and the delay of server plugins is allowed for.
 

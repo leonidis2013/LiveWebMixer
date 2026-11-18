@@ -151,3 +151,8 @@ dialog .li { display:flex; gap:6px; align-items:center; padding:6px 0; border-to
 .blk.plug { width:340px; }
 button.rec { color:var(--bad); }
 button.rec.on { background:var(--bad); color:#fff; }
+/* LiveVault instrument group colors on channel strips */
+.strip.grp { box-shadow:inset 0 3px 0 var(--grp); }
+.strip.grp .nm { border-bottom:2px solid var(--grp); }
+#hSub a { color:var(--acc); text-decoration:none; }
+.strip.grp.sel { box-shadow:inset 0 3px 0 var(--grp), inset 0 0 0 1px var(--acc); }

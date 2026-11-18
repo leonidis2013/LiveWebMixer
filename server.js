@@ -249,7 +249,7 @@ async function handle(req, res) {
 
   if (seg[1] === 'state' && m === 'GET') return send(res, 200, { version: VERSION, songs: await listSongs(), busy: running + queue.length });
   if (seg[1] === 'settings') {
-    const st = await getSettings(), pub = v => ({ vault: v ? { url: v.url, hasToken: !!v.token, insecure: !!v.insecure } : null });
+    const st = await getSettings(), pub = v => ({ vault: v ? { url: v.url, hasToken: !!v.token, insecure: !!v.insecure, user: v.user || '' } : null });
     if (m === 'GET') return send(res, 200, pub(st.vault));
     if (m === 'PUT') {
       const b = await readBody(req);
@@ -259,7 +259,7 @@ async function handle(req, res) {
         if (!/^https?:\/\//.test(v.url)) return send(res, 400, { error: 'The LiveVault address must start with http:// or https://' });
         const info = await vault.json(v, 'GET', '/api/v1/info');
         if (info.name !== 'LiveVault') return send(res, 400, { error: 'That address answered, but it is not a LiveVault' });
-        st.vault = v;
+        v.user = info.user || ''; st.vault = v;
       }
       await writeJson(SETTINGS, st);
       return send(res, 200, pub(st.vault));

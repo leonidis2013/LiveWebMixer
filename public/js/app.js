@@ -159,11 +159,12 @@ function vaultCard() {
     return card;
   }
   const q = h('input', { type: 'text', class: 'grow', placeholder: 'Search sessions', value: S.vault.q, onchange: () => { S.vault.q = q.value; act(loadVaultList); } });
-  card.append(h('div', { class: 'row', style: 'margin-bottom:8px' }, q, h('button', { class: 'sm', title: 'LiveVault connection', onclick: () => { S.vault.edit = true; renderSetup(); } }, 'Connection')));
+  card.append(h('div', { class: 'row', style: 'margin-bottom:8px' }, q, h('button', { class: 'sm', title: 'LiveVault connection', onclick: () => { S.vault.edit = true; renderSetup(); } }, 'Connection')),
+    h('div', { class: 'note', style: 'margin:-2px 0 8px' }, (v.user ? `Connected as ${v.user}. ` : '') + 'Mixes and takes are saved under that name. ', h('a', { href: v.url, target: '_blank', rel: 'noopener' }, 'Open LiveVault ↗')));
   if (S.vault.err) card.append(h('div', { class: 'errbox' }, S.vault.err));
   else if (!S.vault.list) card.append(h('div', { class: 'note' }, 'Loading…'));
   else if (!S.vault.list.length) card.append(h('div', { class: 'note' }, S.vault.q ? 'No sessions match.' : 'The library has no sessions yet.'));
-  else card.append(...S.vault.list.map(x => h('button', { class: 'song' + (S.song && S.song.vault && S.song.vault.id === String(x.id) ? ' on' : ''), onclick: () => openVault(x.id, x.latest) }, x.name, h('small', {}, 'v' + x.latest))));
+  else card.append(...S.vault.list.map(x => h('button', { class: 'song' + (S.song && S.song.vault && S.song.vault.id === String(x.id) ? ' on' : ''), onclick: () => openVault(x.id, x.latest) }, x.name, h('small', {}, [x.band, 'v' + x.latest].filter(Boolean).join(' · ')))));
   return card;
 }
 function vaultSongCard(song) {
@@ -173,14 +174,17 @@ function vaultSongCard(song) {
   const tplSel = h('select', { onchange: () => { S.tpl = tplSel.value; ls('tpl', S.tpl); } }, h('option', { value: 'auto', selected: S.tpl === 'auto' }, 'Auto, by track name'), S.templates.map(t => h('option', { value: t.name, selected: S.tpl === t.name }, t.name)));
   const qSeg = h('div', { class: 'seg' }, Object.keys(QN).map(q => h('button', { class: S.quality === q ? 'on' : '', onclick: () => { S.quality = q; ls('quality', q); renderSetup(); } }, `${QN[q]} · ${fmtMB(total(q))}`)));
   let n = 0;
+  const TYPES = { service: 'Service', rehearsal: 'Rehearsal', purchased: 'Purchased', training: 'Training pack', studio: 'Studio', other: '' };
+  const sub = [v.band, TYPES[v.type], v.recorded, v.key && 'Key ' + v.key, v.bpm && v.bpm + ' BPM'].filter(Boolean).join(' · ');
   return h('div', { class: 'card' }, h('h2', {}, 'LiveVault session'),
-    h('div', { class: 'row', style: 'margin-bottom:8px' }, h('b', { class: 'grow', style: 'font-size:16px' }, song.name), ver),
+    h('div', { class: 'row', style: 'margin-bottom:8px' }, h('div', { class: 'grow' }, h('b', { style: 'font-size:16px' }, song.name), sub && h('div', { class: 'note' }, sub)), ver,
+      v.web && h('a', { href: `${v.web}/#/s/${encodeURIComponent(v.id)}/${encodeURIComponent(v.version)}`, target: '_blank', rel: 'noopener', title: 'This session in LiveVault: versions, mixes, recordings and review notes' }, h('button', { class: 'sm' }, 'Open in LiveVault ↗'))),
     (v.tags.length || v.notes) ? h('div', { class: 'note', style: 'margin-bottom:10px' }, h('div', { class: 'chips', style: 'margin-bottom:4px' }, v.tags.map(t => h('span', { class: 'chip' }, t))), v.notes) : null,
     h('div', { class: 'row', style: 'margin-bottom:8px' }, h('span', { class: 'note' }, 'Channel template'), tplSel, h('span', { class: 'note' }, 'Audio quality'), qSeg, h('span', { class: 'grow' }),
       h('button', { class: 'on', disabled: !chans.length || !Engine.supported(), onclick: openMixer }, `Open mixer (${chans.length} channels)`)),
     h('div', { class: 'note', style: 'margin:0 0 10px' }, `Tracks play straight from LiveVault and stay cached in this browser. Mixes and scenes are saved to version ${v.version} in LiveVault. Loaded, this session uses about ${fmtMB(mem)} of memory. To change the tracks, make a new version in LiveVault.`),
     h('div', { style: 'overflow-x:auto' }, h('table', { class: 'tr' }, h('thead', {}, h('tr', {}, ['Ch', 'Name', 'Format', 'Use as', 'Download'].map(x => h('th', {}, x)))),
-      h('tbody', {}, song.tracks.map(t => h('tr', {}, h('td', { class: 'num' }, t.role === 'channel' ? String(++n) : 'REF'), h('td', { style: 'width:50%' }, t.name), h('td', { class: 'num' }, `${t.channels > 1 ? 'Stereo' : 'Mono'} · ${fmtTime(t.duration)}`),
+      h('tbody', {}, song.tracks.map(t => h('tr', {}, h('td', { class: 'num' }, t.role === 'channel' ? String(++n) : 'REF'), h('td', { style: 'width:50%' + (t.color ? `;box-shadow:inset 3px 0 0 ${t.color};padding-left:10px` : '') }, t.name), h('td', { class: 'num' }, `${t.channels > 1 ? 'Stereo' : 'Mono'} · ${fmtTime(t.duration)}`),
         h('td', { class: 'num' }, t.role === 'channel' ? 'Mixer channel' : 'Reference mix'), h('td', { class: 'num' }, fmtMB(t.sizes[S.quality] || 0))))))));
 }
 
@@ -240,7 +244,9 @@ function showPage(p) {
   if (p === 'setup' && E.ctx) { E.pause(); closePopup(); }
   $('#setup').classList.toggle('hide', p !== 'setup'); $('#mixer').classList.toggle('hide', p !== 'mixer');
   for (const id of ['#viewSeg', '#scBtn', '#midiBtn', '#setupBtn']) $(id).classList.toggle('hide', p !== 'mixer');
-  $('#hSub').textContent = p === 'mixer' ? S.song.name : 'Mix training console';
+  const sv = S.song && S.song.vault;
+  $('#hSub').replaceChildren(p !== 'mixer' ? 'Mix training console' : sv ? `${S.song.name} · LiveVault v${sv.version} ` : S.song.name,
+    p === 'mixer' && sv && sv.web ? h('a', { href: `${sv.web}/#/s/${encodeURIComponent(sv.id)}/${encodeURIComponent(sv.version)}`, target: '_blank', rel: 'noopener', title: 'Back to this session in LiveVault' }, '↗') : '');
   $('#status').replaceChildren();
   if (p === 'mixer') { renderTransport(); renderMixer(); } else { renderSetup(); pollSong(); }
 }
@@ -395,6 +401,8 @@ function stripEl(id, bank) {
   const mute = h('button', { class: 'mute' + (b.muted() ? ' on' : ''), onclick: () => { b.toggle(); mute.classList.toggle('on', b.muted()); dirty(); } }, b.sof ? 'OFF' : 'MUTE');
   fad.mute = () => mute.click();
   const el = h('div', { class: `strip k-${isD ? 'dca' : s.kind}` + (S.sel === id ? ' sel' : '') + (b.sof ? ' sof' : '') + (bank ? ' bank' : '') });
+  const tr = s && s.kind === 'in' && S.song.tracks.find(t => 'in' + t.id === id);
+  if (tr && tr.color) { el.classList.add('grp'); el.style.setProperty('--grp', tr.color); }   // instrument group color from LiveVault
   el.append(h('div', { class: 'no' }, stripNo(id) + (b.sof ? ' → ' + stripNo(S.sof) : '')));
   if (daw && !isD) {
     el.append(h('div', { class: 'ins' }, s.chain.map(blk => h('button', { class: blk.on ? 'on' : 'byp', title: blkLong(blk), onclick: () => openPopup(id, blk.id) }, blkLabel(blk))), addBlockSel(s, '+')));
@@ -731,15 +739,20 @@ window.addEventListener('beforeunload', saveMix);
     loadVaultList().then(() => S.page === 'setup' && renderSetup());
     const last = ls('song'); if (last && S.songs.some(s => s.id === last)) S.song = await api('GET', '/api/songs/' + last);
   } catch (e) { S.msg = 'Cannot reach the LiveWebMixer server: ' + e.message; }
-  // "Open in LiveWebMixer" in LiveVault links here as #vault=<session id>&version=<version>
+  // "Open in LiveWebMixer" in LiveVault links here as #vault=<session id>&version=<version>, and since LiveVault 1.4 also
+  // &lv=<LiveVault address>&token=<personal token>: connect as the person who clicked, then go straight into the mixer.
   const hp = new URLSearchParams(location.hash.slice(1));
+  let straightIn = false;
   if (hp.get('vault')) {
     history.replaceState(null, '', location.pathname + location.search);
-    if (!S.settings.vault) S.msg = 'To open LiveVault sessions, connect LiveVault first: LiveVault library > address and access token.';
-    else try { S.song = await api('GET', `/api/vault/sessions/${encodeURIComponent(hp.get('vault'))}/versions/${encodeURIComponent(hp.get('version') || '')}`); ls('song', ''); }
-    catch (e) { S.msg = 'Could not open that LiveVault session: ' + e.message; }
+    try {
+      if (hp.get('lv') && hp.get('token')) { S.settings = await api('PUT', '/api/settings', { vault: { url: hp.get('lv'), token: hp.get('token'), insecure: hp.get('insecure') === '1' } }); loadVaultList().then(() => S.page === 'setup' && renderSetup()); }
+      if (!S.settings.vault) S.msg = 'To open LiveVault sessions, connect LiveVault first: LiveVault library > address and access token.';
+      else { S.song = await api('GET', `/api/vault/sessions/${encodeURIComponent(hp.get('vault'))}/versions/${encodeURIComponent(hp.get('version') || '')}`); ls('song', ''); straightIn = true; }
+    } catch (e) { S.msg = 'Could not open that LiveVault session: ' + e.message; }
   }
   renderSetup(); pollSong(); requestAnimationFrame(frame);
+  if (straightIn && S.song && S.song.tracks.some(t => t.role === 'channel') && Engine.supported()) openMixer();
 })();
 let linkT = 0;
 E.link.onchange = () => { clearTimeout(linkT); linkT = setTimeout(() => { if (S.page === 'mixer') renderPanelOrPopup(); }, 50); };
