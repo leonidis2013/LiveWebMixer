@@ -1,15 +1,17 @@
 # TrueNAS SCALE: Apps > Discover Apps > Custom App > "Install via YAML", paste this.
 # Then open https://<TrueNAS IP>:9443 and accept the certificate warning once.
-# Change the host ports if 9443 or 9080 are taken. Data lives in a Docker named volume.
+# Change the host ports if 9443 or 9480 are taken (LiveCompanion uses 9080, LiveVault 9543 and 9580). Data lives in a Docker named volume.
 services:
   livewebmixer:
     image: ghcr.io/leonidis2013/livewebmixer:latest
+    # check for a newer image every time the app starts or restarts
+    pull_policy: always
     container_name: livewebmixer
     restart: unless-stopped
     ports:
       - "9443:8443"
       # plain http: only for a reverse proxy that adds https itself
-      - "9080:8080"
+      - "9480:8080"
     volumes:
       - livewebmixer-data:/data
     environment:
